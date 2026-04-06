@@ -113,6 +113,27 @@ def get_previous_eps(conn, ticker: str, fiscal_year: int, broker: str) -> Option
     return float(row["fwd_eps"]) if row else None
 
 
+def get_previous_eps_record(conn, ticker: str, fiscal_year: int, broker: str, current_report_date):
+    return conn.execute(
+        """
+        SELECT
+            e.fwd_eps,
+            r.report_date,
+            r.report_url
+        FROM eps_estimates e
+        JOIN analyst_reports r ON e.report_id = r.id
+        WHERE e.ticker = ? AND e.fiscal_year = ? AND e.broker = ?
+          AND (
+              r.report_date < ?
+              OR (r.report_date = ?)
+          )
+        ORDER BY r.report_date DESC, e.extracted_at DESC, e.id DESC
+        LIMIT 1
+        """,
+        (ticker, fiscal_year, broker, current_report_date, current_report_date),
+    ).fetchone()
+
+
 def get_previous_target_price(conn, ticker: str, broker: str) -> Optional[float]:
     row = conn.execute(
         """
@@ -124,3 +145,24 @@ def get_previous_target_price(conn, ticker: str, broker: str) -> Optional[float]
         (ticker, broker),
     ).fetchone()
     return float(row["target_price"]) if row else None
+
+
+def get_previous_target_price_record(conn, ticker: str, broker: str, current_report_date):
+    return conn.execute(
+        """
+        SELECT
+            e.target_price,
+            r.report_date,
+            r.report_url
+        FROM eps_estimates e
+        JOIN analyst_reports r ON e.report_id = r.id
+        WHERE e.ticker = ? AND e.broker = ? AND e.target_price IS NOT NULL
+          AND (
+              r.report_date < ?
+              OR (r.report_date = ?)
+          )
+        ORDER BY r.report_date DESC, e.extracted_at DESC, e.id DESC
+        LIMIT 1
+        """,
+        (ticker, broker, current_report_date, current_report_date),
+    ).fetchone()

@@ -5,6 +5,13 @@
 ### Changed
 - Replaced Slack alerts with Telegram bot notifications (`TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID`)
 - Removed the legacy unused Slack alert module and dependency
+- Fixed dashboard install/docs drift and aligned README with current Telegram-based behavior
+- Fixed consensus aggregate calculations to use broker-level consensus instead of single latest estimates
+- Fixed target price revision tracking to compare one report against the previous report from the same brokerage
+- Added responsive dashboard layout styling so the UI adapts better to window size
+- Removed the old `EPS Estimates` tab and updated the `Consensus` tab to show week-over-week change
+- Added previous/current report dates to revision displays and Telegram revision alerts
+- Fixed revision ordering to compare older report dates to newer report dates consistently
 
 ## [0.1.0] - 2026-04-06
 

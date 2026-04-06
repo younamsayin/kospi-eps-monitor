@@ -32,6 +32,8 @@ def send_eps_change_alert(
     fiscal_year: int,
     prev_eps: float,
     new_eps: float,
+    prev_report_date: Optional[str],
+    new_report_date: Optional[str],
     target_price: Optional[int],
     recommendation: Optional[str],
     report_url: str,
@@ -51,6 +53,8 @@ def send_eps_change_alert(
         f"  {prev_eps:,.0f} → <b>{new_eps:,.0f}</b> KRW/share ({pct_change:+.1f}%)",
         f"  Broker: {broker}",
     ]
+    if prev_report_date or new_report_date:
+        lines.append(f"  Dates: {prev_report_date or '-'} → {new_report_date or '-'}")
     if target_price:
         lines.append(f"  Target: {target_price:,}원")
     if recommendation:
@@ -66,6 +70,8 @@ def send_target_price_change_alert(
     broker: str,
     prev_tp: float,
     new_tp: float,
+    prev_report_date: Optional[str],
+    new_report_date: Optional[str],
     recommendation: Optional[str],
     report_url: str,
 ):
@@ -83,6 +89,8 @@ def send_target_price_change_alert(
         f"  {prev_tp:,.0f} → <b>{new_tp:,.0f}</b>원 ({pct_change:+.1f}%)",
         f"  Broker: {broker}",
     ]
+    if prev_report_date or new_report_date:
+        lines.append(f"  Dates: {prev_report_date or '-'} → {new_report_date or '-'}")
     if recommendation:
         lines.append(f"  {recommendation}")
     lines.append(f'  <a href="{report_url}">View Report</a>')

@@ -10,6 +10,57 @@ load_dotenv()
 DB_PATH = os.environ.get("DB_PATH", "kospi_eps.db")
 
 st.set_page_config(page_title="KOSPI EPS Monitor", layout="wide")
+
+st.markdown(
+    """
+    <style>
+        .block-container {
+            max-width: 100%;
+            padding-top: 1.25rem;
+            padding-left: clamp(1rem, 3vw, 2.5rem);
+            padding-right: clamp(1rem, 3vw, 2.5rem);
+            padding-bottom: 2rem;
+        }
+
+        [data-testid="stSidebar"] {
+            min-width: min(22rem, 85vw);
+            max-width: min(22rem, 85vw);
+        }
+
+        [data-testid="stHorizontalBlock"] {
+            gap: 0.75rem;
+            flex-wrap: wrap;
+        }
+
+        [data-testid="column"] {
+            min-width: min(100%, 240px);
+        }
+
+        .stTabs [data-baseweb="tab-list"] {
+            flex-wrap: wrap;
+            gap: 0.5rem;
+        }
+
+        .stTabs [data-baseweb="tab"] {
+            white-space: nowrap;
+        }
+
+        @media (max-width: 900px) {
+            .block-container {
+                padding-left: 1rem;
+                padding-right: 1rem;
+            }
+
+            [data-testid="stSidebar"] {
+                min-width: 100vw;
+                max-width: 100vw;
+            }
+        }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
 st.title("KOSPI 200 — Forward EPS Monitor")
 
 
@@ -97,72 +148,14 @@ st.divider()
 
 # ── Main tabs ─────────────────────────────────────────────────────────────────
 
-tab1, tab2, tab3, tab4, tab5 = st.tabs([
-    "EPS Estimates", "Consensus", "Index Aggregate", "Recent Reports", "Revisions"
+tab1, tab2, tab3, tab4 = st.tabs([
+    "Consensus", "Index Aggregate", "Recent Reports", "Revisions"
 ])
 
 
-# ── Tab 1: EPS Estimates (per broker) ────────────────────────────────────────
+# ── Tab 1: Consensus (average across brokers) ────────────────────────────────
 
 with tab1:
-    ticker_filter = "AND e.ticker = ?" if selected_ticker else ""
-    params = (selected_ticker,) if selected_ticker else ()
-
-    eps_df = q(f"""
-        SELECT
-            r.company, e.ticker, e.broker, e.fiscal_year,
-            e.fwd_eps, e.target_price, e.recommendation,
-            r.report_date, r.report_url
-        FROM eps_estimates e
-        JOIN analyst_reports r ON e.report_id = r.id
-        WHERE e.fiscal_year = {selected_year} {ticker_filter}
-        ORDER BY r.report_date DESC, r.company
-    """, params)
-
-    if eps_df.empty:
-        st.info("No EPS estimates found for the selected filters.")
-    else:
-        latest_eps = eps_df.sort_values("report_date", ascending=False).drop_duplicates(
-            subset=["ticker", "broker"]
-        )
-
-        if not selected_ticker:
-            fig = go.Figure()
-            chart_data = latest_eps.sort_values("fwd_eps", ascending=True).tail(30)
-            colors = ["#ef4444" if v < 0 else "#22c55e" for v in chart_data["fwd_eps"]]
-            fig.add_trace(go.Bar(
-                x=chart_data["fwd_eps"],
-                y=chart_data["company"],
-                orientation="h",
-                marker_color=colors,
-                text=[f"{v:,.0f}" for v in chart_data["fwd_eps"]],
-                textposition="outside",
-            ))
-            fig.update_layout(
-                title=f"FWD EPS {selected_year}E — Latest Estimates (per broker)",
-                xaxis_title="EPS (KRW/share)",
-                height=max(400, len(chart_data) * 28),
-                margin=dict(l=10, r=60, t=40, b=10),
-                plot_bgcolor="rgba(0,0,0,0)",
-                paper_bgcolor="rgba(0,0,0,0)",
-            )
-            st.plotly_chart(fig, use_container_width=True)
-
-        display_df = latest_eps[[
-            "company", "ticker", "fiscal_year", "fwd_eps", "target_price",
-            "recommendation", "broker", "report_date"
-        ]].copy()
-        display_df.columns = [
-            "Company", "Ticker", "Year", "FWD EPS", "Target Price", "Rec.", "Broker", "Report Date"
-        ]
-        display_df["FWD EPS"] = display_df["FWD EPS"].apply(lambda x: f"{x:,.0f}" if pd.notna(x) else "-")
-        display_df["Target Price"] = display_df["Target Price"].apply(lambda x: f"{x:,.0f}" if pd.notna(x) else "-")
-        st.dataframe(display_df, use_container_width=True, hide_index=True)
-
-
-# ── Tab 2: Consensus (average across brokers) ────────────────────────────────
-
-with tab2:
     ticker_filter = "AND e.ticker = ?" if selected_ticker else ""
     params = (selected_ticker,) if selected_ticker else ()
 
@@ -173,21 +166,62 @@ with tab2:
             FROM eps_estimates e
             JOIN analyst_reports r ON e.report_id = r.id
             WHERE e.fiscal_year = {selected_year} AND e.fwd_eps IS NOT NULL {ticker_filter}
+        ),
+        week_old_per_broker AS (
+            SELECT e.ticker, r.company, e.broker, e.fiscal_year, e.fwd_eps, e.target_price,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY e.ticker, e.broker, e.fiscal_year
+                       ORDER BY e.extracted_at DESC, e.id DESC
+                   ) AS rn
+            FROM eps_estimates e
+            JOIN analyst_reports r ON e.report_id = r.id
+            WHERE e.fiscal_year = {selected_year}
+              AND e.fwd_eps IS NOT NULL
+              AND DATE(e.extracted_at) <= DATE('now', '-7 day')
+              {ticker_filter}
+        ),
+        latest_consensus AS (
+            SELECT
+                ticker, company,
+                COUNT(DISTINCT broker) AS broker_count,
+                ROUND(AVG(fwd_eps), 0) AS consensus_eps,
+                ROUND(MIN(fwd_eps), 0) AS min_eps,
+                ROUND(MAX(fwd_eps), 0) AS max_eps,
+                ROUND(AVG(target_price), 0) AS consensus_tp,
+                ROUND(MIN(target_price), 0) AS min_tp,
+                ROUND(MAX(target_price), 0) AS max_tp
+            FROM latest_per_broker
+            WHERE rn = 1
+            GROUP BY ticker, company
+        ),
+        week_old_consensus AS (
+            SELECT
+                ticker,
+                ROUND(AVG(fwd_eps), 0) AS wow_base_eps,
+                ROUND(AVG(target_price), 0) AS wow_base_tp
+            FROM week_old_per_broker
+            WHERE rn = 1
+            GROUP BY ticker
         )
         SELECT
-            ticker, company,
-            COUNT(DISTINCT broker) AS broker_count,
-            ROUND(AVG(fwd_eps), 0) AS consensus_eps,
-            ROUND(MIN(fwd_eps), 0) AS min_eps,
-            ROUND(MAX(fwd_eps), 0) AS max_eps,
-            ROUND(AVG(target_price), 0) AS consensus_tp,
-            ROUND(MIN(target_price), 0) AS min_tp,
-            ROUND(MAX(target_price), 0) AS max_tp
-        FROM latest_per_broker
-        WHERE rn = 1
-        GROUP BY ticker, company
-        HAVING broker_count >= 1
-        ORDER BY consensus_eps DESC
+            l.ticker, l.company, l.broker_count,
+            l.consensus_eps, l.min_eps, l.max_eps,
+            l.consensus_tp, l.min_tp, l.max_tp,
+            w.wow_base_eps, w.wow_base_tp,
+            CASE
+                WHEN w.wow_base_eps IS NOT NULL AND w.wow_base_eps != 0
+                THEN ROUND((l.consensus_eps - w.wow_base_eps) * 100.0 / ABS(w.wow_base_eps), 2)
+                ELSE NULL
+            END AS wow_eps_change_pct,
+            CASE
+                WHEN w.wow_base_tp IS NOT NULL AND w.wow_base_tp != 0
+                THEN ROUND((l.consensus_tp - w.wow_base_tp) * 100.0 / ABS(w.wow_base_tp), 2)
+                ELSE NULL
+            END AS wow_tp_change_pct
+        FROM latest_consensus l
+        LEFT JOIN week_old_consensus w ON l.ticker = w.ticker
+        WHERE l.broker_count >= 1
+        ORDER BY l.consensus_eps DESC
     """, params)
 
     if consensus_df.empty:
@@ -197,38 +231,66 @@ with tab2:
 
         if not selected_ticker:
             fig = go.Figure()
-            chart_data = consensus_df.sort_values("consensus_eps", ascending=True).tail(30)
+            chart_data = consensus_df.dropna(subset=["wow_eps_change_pct"]).copy()
+            chart_data = chart_data.sort_values("wow_eps_change_pct", ascending=True).tail(30)
+            colors = ["#ef4444" if v < 0 else "#22c55e" for v in chart_data["wow_eps_change_pct"]]
             fig.add_trace(go.Bar(
-                x=chart_data["consensus_eps"],
+                x=chart_data["wow_eps_change_pct"],
                 y=chart_data["company"],
                 orientation="h",
-                marker_color="#3b82f6",
-                text=[f"{v:,.0f} ({n} brokers)" for v, n in zip(chart_data["consensus_eps"], chart_data["broker_count"])],
+                marker_color=colors,
+                text=[
+                    f"{v:+.1f}% ({n} brokers)"
+                    for v, n in zip(chart_data["wow_eps_change_pct"], chart_data["broker_count"])
+                ],
                 textposition="outside",
             ))
             fig.update_layout(
-                title=f"Consensus FWD EPS {selected_year}E (avg across brokers)",
-                xaxis_title="EPS (KRW/share)",
+                title=f"Consensus FWD EPS {selected_year}E — WoW Change",
+                xaxis_title="WoW Change (%)",
                 height=max(400, len(chart_data) * 28),
                 margin=dict(l=10, r=100, t=40, b=10),
                 plot_bgcolor="rgba(0,0,0,0)",
                 paper_bgcolor="rgba(0,0,0,0)",
             )
-            st.plotly_chart(fig, use_container_width=True)
+            if chart_data.empty:
+                st.info("Not enough history yet for a week-over-week consensus chart.")
+            else:
+                st.plotly_chart(fig, use_container_width=True)
+        else:
+            latest = consensus_df.iloc[0]
+            metric_cols = st.columns(3)
+            metric_cols[0].metric(
+                "Consensus EPS",
+                f"{latest['consensus_eps']:,.0f}" if pd.notna(latest["consensus_eps"]) else "-",
+                f"{latest['wow_eps_change_pct']:+.1f}% WoW" if pd.notna(latest["wow_eps_change_pct"]) else None,
+            )
+            metric_cols[1].metric(
+                "Consensus TP",
+                f"{latest['consensus_tp']:,.0f}" if pd.notna(latest["consensus_tp"]) else "-",
+                f"{latest['wow_tp_change_pct']:+.1f}% WoW" if pd.notna(latest["wow_tp_change_pct"]) else None,
+            )
+            metric_cols[2].metric(
+                "Brokers",
+                int(latest["broker_count"]) if pd.notna(latest["broker_count"]) else 0,
+            )
 
         display_df = consensus_df.copy()
         display_df.columns = [
             "Ticker", "Company", "Brokers", "Consensus EPS", "Min EPS", "Max EPS",
-            "Consensus TP", "Min TP", "Max TP"
+            "Consensus TP", "Min TP", "Max TP", "WoW Base EPS", "WoW Base TP",
+            "WoW EPS %", "WoW TP %"
         ]
-        for col in ["Consensus EPS", "Min EPS", "Max EPS", "Consensus TP", "Min TP", "Max TP"]:
+        for col in ["Consensus EPS", "Min EPS", "Max EPS", "Consensus TP", "Min TP", "Max TP", "WoW Base EPS", "WoW Base TP"]:
             display_df[col] = display_df[col].apply(lambda x: f"{x:,.0f}" if pd.notna(x) and x else "-")
+        for col in ["WoW EPS %", "WoW TP %"]:
+            display_df[col] = display_df[col].apply(lambda x: f"{x:+.2f}%" if pd.notna(x) else "-")
         st.dataframe(display_df, use_container_width=True, hide_index=True)
 
 
-# ── Tab 3: Index Aggregate ───────────────────────────────────────────────────
+# ── Tab 2: Index Aggregate ───────────────────────────────────────────────────
 
-with tab3:
+with tab2:
     st.subheader("KOSPI 200 — Aggregate FWD EPS Trend")
     st.caption("Sum of latest consensus EPS across all tracked companies, by extraction date.")
 
@@ -332,9 +394,9 @@ with tab3:
             st.dataframe(display_snap, use_container_width=True, hide_index=True)
 
 
-# ── Tab 4: Recent Reports ───────────────────────────────────────────────────
+# ── Tab 3: Recent Reports ───────────────────────────────────────────────────
 
-with tab4:
+with tab3:
     ticker_filter = "AND ticker = ?" if selected_ticker else ""
     params = (selected_ticker,) if selected_ticker else ()
 
@@ -363,9 +425,9 @@ with tab4:
             st.divider()
 
 
-# ── Tab 5: EPS & Target Price Revisions ──────────────────────────────────────
+# ── Tab 4: EPS & Target Price Revisions ──────────────────────────────────────
 
-with tab5:
+with tab4:
     ticker_filter = "AND e.ticker = ?" if selected_ticker else ""
     params = (selected_ticker,) if selected_ticker else ()
 
@@ -373,14 +435,21 @@ with tab5:
         SELECT
             r.company, e.ticker, e.broker, e.fiscal_year,
             e.fwd_eps,
-            LAG(e.fwd_eps) OVER (PARTITION BY e.ticker, e.fiscal_year, e.broker ORDER BY e.extracted_at) AS prev_eps,
+            r.report_date,
+            LAG(e.fwd_eps) OVER (
+                PARTITION BY e.ticker, e.fiscal_year, e.broker
+                ORDER BY r.report_date, e.extracted_at, e.id
+            ) AS prev_eps,
+            LAG(r.report_date) OVER (
+                PARTITION BY e.ticker, e.fiscal_year, e.broker
+                ORDER BY r.report_date, e.extracted_at, e.id
+            ) AS prev_report_date,
             e.target_price,
-            LAG(e.target_price) OVER (PARTITION BY e.ticker, e.broker ORDER BY e.extracted_at) AS prev_tp,
             e.extracted_at, r.report_url
         FROM eps_estimates e
         JOIN analyst_reports r ON e.report_id = r.id
         WHERE 1=1 {ticker_filter}
-        ORDER BY e.extracted_at DESC
+        ORDER BY r.report_date DESC, e.extracted_at DESC
     """, params)
 
     # --- EPS Revisions ---
@@ -406,6 +475,7 @@ with tab5:
                     st.markdown(
                         f"**{row['company']}** ({row['ticker']}) {int(row['fiscal_year'])}E  \n"
                         f"{row['prev_eps']:,.0f} → **{row['fwd_eps']:,.0f}** ({row['change_pct']:+.1f}%)  \n"
+                        f"{row['prev_report_date']} → {row['report_date']}  \n"
                         f"_{row['broker']}_"
                     )
                     st.divider()
@@ -419,6 +489,7 @@ with tab5:
                     st.markdown(
                         f"**{row['company']}** ({row['ticker']}) {int(row['fiscal_year'])}E  \n"
                         f"{row['prev_eps']:,.0f} → **{row['fwd_eps']:,.0f}** ({row['change_pct']:+.1f}%)  \n"
+                        f"{row['prev_report_date']} → {row['report_date']}  \n"
                         f"_{row['broker']}_"
                     )
                     st.divider()
@@ -435,25 +506,31 @@ with tab5:
                 e.broker,
                 e.target_price,
                 MIN(e.extracted_at) AS extracted_at,
+                r.report_date,
                 r.report_url
             FROM eps_estimates e
             JOIN analyst_reports r ON e.report_id = r.id
             WHERE e.target_price IS NOT NULL {tp_filter}
-            GROUP BY e.report_id, e.ticker, r.company, e.broker, e.target_price, r.report_url
+            GROUP BY e.report_id, e.ticker, r.company, e.broker, e.target_price, r.report_date, r.report_url
         )
         SELECT
             company,
             ticker,
             broker,
             target_price,
+            report_date,
             LAG(target_price) OVER (
                 PARTITION BY ticker, broker
-                ORDER BY extracted_at, report_id
+                ORDER BY report_date, extracted_at, report_id
             ) AS prev_tp,
+            LAG(report_date) OVER (
+                PARTITION BY ticker, broker
+                ORDER BY report_date, extracted_at, report_id
+            ) AS prev_report_date,
             extracted_at,
             report_url
         FROM report_tps
-        ORDER BY extracted_at DESC, report_id DESC
+        ORDER BY report_date DESC, extracted_at DESC, report_id DESC
     """, params)
     tp_rev = tp_rev.dropna(subset=["prev_tp", "target_price"]).copy()
     tp_rev = tp_rev[tp_rev["prev_tp"] != 0]
@@ -475,6 +552,7 @@ with tab5:
                     st.markdown(
                         f"**{row['company']}** ({row['ticker']})  \n"
                         f"{row['prev_tp']:,.0f} → **{row['target_price']:,.0f}**원 ({row['tp_change_pct']:+.1f}%)  \n"
+                        f"{row['prev_report_date']} → {row['report_date']}  \n"
                         f"_{row['broker']}_"
                     )
                     st.divider()
@@ -488,6 +566,7 @@ with tab5:
                     st.markdown(
                         f"**{row['company']}** ({row['ticker']})  \n"
                         f"{row['prev_tp']:,.0f} → **{row['target_price']:,.0f}**원 ({row['tp_change_pct']:+.1f}%)  \n"
+                        f"{row['prev_report_date']} → {row['report_date']}  \n"
                         f"_{row['broker']}_"
                     )
                     st.divider()

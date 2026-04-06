@@ -15,7 +15,7 @@ from dotenv import load_dotenv
 from db.models import (
     get_conn, init_db, upsert_kospi200, get_kospi200,
     report_exists, insert_report, insert_eps,
-    get_previous_eps, get_previous_target_price,
+    get_previous_eps_record, get_previous_target_price_record,
 )
 from scraper.krx import fetch_kospi200
 from scraper.naver import fetch_recent_reports as naver_fetch, download_pdf as naver_download
@@ -62,7 +62,13 @@ def process_report(conn, report: dict, pdf_bytes: bytes, kospi200_tickers: set):
     # --- Target price change detection (once per report, before inserting estimates) ---
     new_tp = extracted.get("target_price")
     if new_tp:
-        prev_tp = get_previous_target_price(conn, report["ticker"], report["broker"])
+        prev_tp_row = get_previous_target_price_record(
+            conn,
+            report["ticker"],
+            report["broker"],
+            report["report_date"],
+        )
+        prev_tp = float(prev_tp_row["target_price"]) if prev_tp_row else None
         if prev_tp and abs(new_tp - prev_tp) / abs(prev_tp) > TP_CHANGE_THRESHOLD:
             direction = "RAISED" if new_tp > prev_tp else "CUT"
             print(f"    [TP {direction}] {report['ticker']}: {prev_tp:,.0f} → {new_tp:,.0f}")
@@ -72,6 +78,8 @@ def process_report(conn, report: dict, pdf_bytes: bytes, kospi200_tickers: set):
                 broker=report["broker"],
                 prev_tp=prev_tp,
                 new_tp=new_tp,
+                prev_report_date=prev_tp_row["report_date"] if prev_tp_row else None,
+                new_report_date=report["report_date"],
                 recommendation=extracted.get("recommendation"),
                 report_url=report["report_url"],
             )
@@ -87,7 +95,14 @@ def process_report(conn, report: dict, pdf_bytes: bytes, kospi200_tickers: set):
         if not fiscal_year or new_eps is None:
             continue
 
-        prev_eps = get_previous_eps(conn, report["ticker"], fiscal_year, report["broker"])
+        prev_eps_row = get_previous_eps_record(
+            conn,
+            report["ticker"],
+            fiscal_year,
+            report["broker"],
+            report["report_date"],
+        )
+        prev_eps = float(prev_eps_row["fwd_eps"]) if prev_eps_row else None
 
         insert_eps(conn, {
             "report_id": report_id,
@@ -111,6 +126,8 @@ def process_report(conn, report: dict, pdf_bytes: bytes, kospi200_tickers: set):
                 fiscal_year=fiscal_year,
                 prev_eps=prev_eps,
                 new_eps=new_eps,
+                prev_report_date=prev_eps_row["report_date"] if prev_eps_row else None,
+                new_report_date=report["report_date"],
                 target_price=new_tp,
                 recommendation=extracted.get("recommendation"),
                 report_url=report["report_url"],
