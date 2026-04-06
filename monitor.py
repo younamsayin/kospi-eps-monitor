@@ -151,6 +151,17 @@ def _archive_report_pdf(report: dict, pdf_bytes: bytes) -> str:
     return path
 
 
+def _format_eta(seconds_remaining: float) -> str:
+    seconds = max(0, int(seconds_remaining))
+    minutes, seconds = divmod(seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        return f"{hours}h {minutes}m {seconds}s"
+    if minutes:
+        return f"{minutes}m {seconds}s"
+    return f"{seconds}s"
+
+
 def _apply_extracted_metadata(report: dict, extracted: dict):
     if not report.get("ticker") and extracted.get("ticker"):
         report["ticker"] = extracted["ticker"]
@@ -276,31 +287,82 @@ def process_report(conn, report: dict, pdf_bytes: bytes, kospi200_tickers: set):
 
 
 def run_source(conn, source_name: str, reports: list, download_fn, kospi200_tickers: set):
-    logger.info("[%s] Found %s reports.", source_name, len(reports))
+    total_reports = len(reports)
+    logger.info("[%s] Found %s reports.", source_name, total_reports)
 
-    for report in reports:
+    processed = 0
+    skipped_existing = 0
+    skipped_download = 0
+    skipped_duplicate_pdf = 0
+    started_at = time.time()
+
+    for idx, report in enumerate(reports, start=1):
+        elapsed = time.time() - started_at
+        avg_seconds = elapsed / max(1, idx - 1) if idx > 1 else 0
+        remaining = total_reports - idx + 1
+        eta = _format_eta(avg_seconds * remaining) if avg_seconds else "estimating..."
+
         if report_exists(conn, report["report_url"]):
+            skipped_existing += 1
+            logger.info(
+                "[%s] [%s/%s] Already saved, skipping. Progress: processed=%s existing=%s download_fail=%s dup_pdf=%s ETA=%s",
+                source_name,
+                idx,
+                total_reports,
+                processed,
+                skipped_existing,
+                skipped_download,
+                skipped_duplicate_pdf,
+                eta,
+            )
             continue
 
         label = f"{report['company']} ({report['ticker']})" if report.get("ticker") else report["title"][:40]
-        logger.info("  Processing: %s — %s", label, report["broker"])
+        logger.info(
+            "[%s] [%s/%s] Processing: %s — %s | processed=%s existing=%s download_fail=%s dup_pdf=%s ETA=%s",
+            source_name,
+            idx,
+            total_reports,
+            label,
+            report["broker"],
+            processed,
+            skipped_existing,
+            skipped_download,
+            skipped_duplicate_pdf,
+            eta,
+        )
 
         try:
             pdf_bytes = download_fn(report["report_url"], report)
         except TypeError:
             pdf_bytes = download_fn(report["report_url"])
         if not pdf_bytes:
+            skipped_download += 1
             logger.warning("    [!] Could not download PDF, skipping.")
             continue
 
         pdf_hash = hashlib.sha256(pdf_bytes).hexdigest()
         if report_exists_by_pdf_hash(conn, pdf_hash):
+            skipped_duplicate_pdf += 1
             logger.warning("    [!] Duplicate PDF content already saved, skipping.")
             continue
         report["pdf_hash"] = pdf_hash
 
         process_report(conn, report, pdf_bytes, kospi200_tickers)
+        processed += 1
         time.sleep(PROCESS_DELAY_SECONDS)
+
+    total_elapsed = time.time() - started_at
+    logger.info(
+        "[%s] Done in %s. processed=%s existing=%s download_fail=%s dup_pdf=%s total=%s",
+        source_name,
+        _format_eta(total_elapsed),
+        processed,
+        skipped_existing,
+        skipped_download,
+        skipped_duplicate_pdf,
+        total_reports,
+    )
 
 
 def run_once():
