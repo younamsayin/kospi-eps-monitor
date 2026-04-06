@@ -26,6 +26,8 @@
 - Fixed Telegram EPS/TP alert date comparisons so duplicate same-day ingestions do not produce `same date → same date` messages
 - Added persistent favorite companies in the dashboard sidebar with a star toggle and one-click shortcuts
 - Tightened Bondweb company matching so shorter company names no longer match inside brokerage names like `현대차증권`
+- Added PDF SHA-256 deduplication so identical reports are skipped even when they arrive under different URLs
+- Fixed the `pdf_hash` schema migration path so older SQLite databases can add the new column and index safely
 
 ## [0.1.0] - 2026-04-06
 

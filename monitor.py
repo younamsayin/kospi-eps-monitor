@@ -9,6 +9,7 @@ Workflow:
 """
 
 import os
+import hashlib
 import re
 import time
 from dotenv import load_dotenv
@@ -18,6 +19,7 @@ from db.models import (
     report_exists, insert_report, insert_eps,
     get_previous_eps_record, get_previous_target_price_record,
     get_latest_prior_report_estimates,
+    report_exists_by_pdf_hash,
 )
 from scraper.krx import fetch_kospi200
 from scraper.naver import fetch_recent_reports as naver_fetch, download_pdf as naver_download
@@ -276,6 +278,12 @@ def run_source(conn, source_name: str, reports: list, download_fn, kospi200_tick
         if not pdf_bytes:
             print(f"    [!] Could not download PDF, skipping.")
             continue
+
+        pdf_hash = hashlib.sha256(pdf_bytes).hexdigest()
+        if report_exists_by_pdf_hash(conn, pdf_hash):
+            print(f"    [!] Duplicate PDF content already saved, skipping.")
+            continue
+        report["pdf_hash"] = pdf_hash
 
         process_report(conn, report, pdf_bytes, kospi200_tickers)
         time.sleep(1)  # be polite to Gemini API

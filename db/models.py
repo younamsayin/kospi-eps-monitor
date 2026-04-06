@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS analyst_reports (
     source      TEXT,
     title       TEXT,
     report_url  TEXT UNIQUE,
+    pdf_hash    TEXT,
     report_date TEXT,
     fetched_at  TEXT DEFAULT (datetime('now'))
 );
@@ -64,6 +65,11 @@ def init_db():
         }
         if "source" not in columns:
             conn.execute("ALTER TABLE analyst_reports ADD COLUMN source TEXT")
+        if "pdf_hash" not in columns:
+            conn.execute("ALTER TABLE analyst_reports ADD COLUMN pdf_hash TEXT")
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_reports_pdf_hash ON analyst_reports(pdf_hash) WHERE pdf_hash IS NOT NULL"
+        )
         conn.execute(
             """
             UPDATE analyst_reports
@@ -103,11 +109,19 @@ def report_exists(conn, report_url: str) -> bool:
     return row is not None
 
 
+def report_exists_by_pdf_hash(conn, pdf_hash: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM analyst_reports WHERE pdf_hash = ?",
+        (pdf_hash,),
+    ).fetchone()
+    return row is not None
+
+
 def insert_report(conn, report: dict) -> int:
     cur = conn.execute(
         """
-        INSERT INTO analyst_reports (ticker, company, broker, source, title, report_url, report_date)
-        VALUES (:ticker, :company, :broker, :source, :title, :report_url, :report_date)
+        INSERT INTO analyst_reports (ticker, company, broker, source, title, report_url, pdf_hash, report_date)
+        VALUES (:ticker, :company, :broker, :source, :title, :report_url, :pdf_hash, :report_date)
         """,
         report,
     )
