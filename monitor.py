@@ -135,5 +135,5 @@ if __name__ == "__main__":
     if "--once" in sys.argv:
         run_once()
     else:
-        interval = int(os.environ.get("CHECK_INTERVAL_MINUTES", "60"))
+        interval = int(os.environ.get("CHECK_INTERVAL_MINUTES", "1440"))
         run_scheduled(interval)
