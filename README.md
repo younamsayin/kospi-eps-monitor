@@ -1,25 +1,26 @@
 # KOSPI EPS Monitor
 
-Monitors KOSPI 200 companies for new analyst reports and tracks Forward EPS estimate revisions. When a broker raises their EPS estimate by more than a configurable threshold, an alert is sent to Slack.
+Monitors KOSPI 200 companies for new analyst reports, extracts forward EPS and target prices from PDFs, tracks revisions over time, and sends Telegram alerts when a broker changes estimates beyond configurable thresholds.
 
 ## How it works
 
 ```
-Naver Finance → new analyst reports (PDF)
+Naver Finance / Bondweb → new analyst reports (PDF)
     → Gemini API (native PDF understanding)
-    → structured EPS data {company, fiscal_year, fwd_eps, target_price}
-    → compare vs previous estimate in SQLite
-    → Slack alert if upgrade > threshold
+    → structured EPS data {company, ticker, fiscal_year, fwd_eps, target_price}
+    → compare vs previous broker estimate in SQLite
+    → Telegram alert if EPS or target price changes > threshold
 ```
 
 ## Features
 
 - Automatically fetches the KOSPI 200 constituent list
-- Scrapes Naver Finance research for new analyst reports daily
-- Downloads PDFs and extracts EPS estimates using Gemini 2.5 Flash
+- Scrapes Naver Finance and Bondweb research for new analyst reports
+- Downloads PDFs and extracts EPS estimates using Gemini
 - Detects EPS upgrades/downgrades per broker per fiscal year
-- Streamlit dashboard with charts, report links, and revision history
-- Telegram alerts on upgrades
+- Detects target price raises/cuts per broker
+- Streamlit dashboard with per-broker estimates, consensus, index-level aggregates, recent reports, and revision history
+- Telegram alerts on EPS and target price changes
 
 ## Setup
 
@@ -94,13 +95,15 @@ kospi-eps-monitor/
 
 | Tab | What it shows |
 |-----|--------------|
-| EPS Estimates | Bar chart + table of latest FWD EPS by company and fiscal year |
+| EPS Estimates | Bar chart + table of latest FWD EPS by company, broker, and fiscal year |
+| Consensus | Average latest EPS / target price across brokers |
+| Index Aggregate | Daily sum of consensus EPS across tracked companies |
 | Recent Reports | All collected reports with direct PDF links |
-| EPS Revisions | Upgrades and downgrades, with per-company EPS trend chart |
+| Revisions | EPS and target price changes, with per-company EPS trend chart |
 
 ## Notes
 
 - KOSPI 200 list is sourced from Naver Finance (updated quarterly by KRX)
-- Analyst reports are scraped from Naver Finance research (`finance.naver.com/research`)
+- Analyst reports are scraped from Naver Finance research (`finance.naver.com/research`) and Bondweb research center
 - EPS revision detection is per broker — consensus-level revision tracking requires multiple brokers covering the same stock
 - The `.db` file is portable; back it up to preserve history

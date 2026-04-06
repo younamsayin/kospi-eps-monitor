@@ -4,6 +4,7 @@
 
 ### Changed
 - Replaced Slack alerts with Telegram bot notifications (`TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID`)
+- Removed the legacy unused Slack alert module and dependency
 
 ## [0.1.0] - 2026-04-06
 

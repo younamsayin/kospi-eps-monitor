@@ -237,24 +237,33 @@ with tab3:
     next_year = selected_year + 1
 
     agg_df = q(f"""
-        WITH daily_latest AS (
+        WITH broker_daily_latest AS (
             SELECT
-                e.ticker, e.fiscal_year, e.fwd_eps, e.extracted_at,
+                e.ticker, e.broker, e.fiscal_year, e.fwd_eps,
                 DATE(e.extracted_at) AS extract_date,
                 ROW_NUMBER() OVER (
-                    PARTITION BY e.ticker, e.fiscal_year, DATE(e.extracted_at)
-                    ORDER BY e.extracted_at DESC
+                    PARTITION BY e.ticker, e.broker, e.fiscal_year, DATE(e.extracted_at)
+                    ORDER BY e.extracted_at DESC, e.id DESC
                 ) AS rn
             FROM eps_estimates e
             WHERE e.fiscal_year IN ({this_year}, {next_year}) AND e.fwd_eps IS NOT NULL
+        ),
+        daily_consensus AS (
+            SELECT
+                ticker,
+                fiscal_year,
+                extract_date,
+                AVG(fwd_eps) AS consensus_eps
+            FROM broker_daily_latest
+            WHERE rn = 1
+            GROUP BY ticker, fiscal_year, extract_date
         )
         SELECT
             extract_date,
             fiscal_year,
-            SUM(fwd_eps) AS total_eps,
+            SUM(consensus_eps) AS total_eps,
             COUNT(DISTINCT ticker) AS company_count
-        FROM daily_latest
-        WHERE rn = 1
+        FROM daily_consensus
         GROUP BY extract_date, fiscal_year
         ORDER BY extract_date
     """)
@@ -285,20 +294,34 @@ with tab3:
         # Snapshot table: current totals
         st.subheader("Current Snapshot")
         snapshot_df = q(f"""
-            WITH latest AS (
-                SELECT e.ticker, r.company, e.fiscal_year, e.fwd_eps, e.target_price,
-                       ROW_NUMBER() OVER (PARTITION BY e.ticker, e.fiscal_year ORDER BY e.extracted_at DESC) AS rn
+            WITH latest_per_broker AS (
+                SELECT e.ticker, r.company, e.broker, e.fiscal_year, e.fwd_eps, e.target_price,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY e.ticker, e.broker, e.fiscal_year
+                           ORDER BY e.extracted_at DESC, e.id DESC
+                       ) AS rn
                 FROM eps_estimates e
                 JOIN analyst_reports r ON e.report_id = r.id
                 WHERE e.fiscal_year IN ({this_year}, {next_year}) AND e.fwd_eps IS NOT NULL
+            ),
+            consensus AS (
+                SELECT
+                    ticker,
+                    company,
+                    fiscal_year,
+                    AVG(fwd_eps) AS consensus_eps,
+                    AVG(target_price) AS consensus_tp
+                FROM latest_per_broker
+                WHERE rn = 1
+                GROUP BY ticker, company, fiscal_year
             )
             SELECT fiscal_year,
                    COUNT(DISTINCT ticker) AS companies,
-                   ROUND(SUM(fwd_eps), 0) AS total_eps,
-                   ROUND(AVG(fwd_eps), 0) AS avg_eps,
-                   ROUND(SUM(target_price), 0) AS total_tp,
-                   ROUND(AVG(target_price), 0) AS avg_tp
-            FROM latest WHERE rn = 1
+                   ROUND(SUM(consensus_eps), 0) AS total_eps,
+                   ROUND(AVG(consensus_eps), 0) AS avg_eps,
+                   ROUND(SUM(consensus_tp), 0) AS total_tp,
+                   ROUND(AVG(consensus_tp), 0) AS avg_tp
+            FROM consensus
             GROUP BY fiscal_year
         """)
         if not snapshot_df.empty:
@@ -402,9 +425,38 @@ with tab5:
 
     # --- Target Price Revisions ---
     st.subheader("Target Price Revisions")
-    tp_rev = revisions_df.dropna(subset=["prev_tp", "target_price"]).copy()
+    tp_filter = "AND report_tps.ticker = ?" if selected_ticker else ""
+    tp_rev = q(f"""
+        WITH report_tps AS (
+            SELECT
+                e.report_id,
+                e.ticker,
+                r.company,
+                e.broker,
+                e.target_price,
+                MIN(e.extracted_at) AS extracted_at,
+                r.report_url
+            FROM eps_estimates e
+            JOIN analyst_reports r ON e.report_id = r.id
+            WHERE e.target_price IS NOT NULL {tp_filter}
+            GROUP BY e.report_id, e.ticker, r.company, e.broker, e.target_price, r.report_url
+        )
+        SELECT
+            company,
+            ticker,
+            broker,
+            target_price,
+            LAG(target_price) OVER (
+                PARTITION BY ticker, broker
+                ORDER BY extracted_at, report_id
+            ) AS prev_tp,
+            extracted_at,
+            report_url
+        FROM report_tps
+        ORDER BY extracted_at DESC, report_id DESC
+    """, params)
+    tp_rev = tp_rev.dropna(subset=["prev_tp", "target_price"]).copy()
     tp_rev = tp_rev[tp_rev["prev_tp"] != 0]
-    tp_rev = tp_rev.drop_duplicates(subset=["ticker", "broker", "extracted_at"])
     if tp_rev.empty:
         st.info("No target price revisions yet.")
     else:

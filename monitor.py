@@ -140,11 +140,12 @@ def run_once():
     conn = get_conn()
     try:
         constituents = refresh_kospi200()
-        kospi200_tickers = {c["ticker"] for c in constituents} if constituents else {
-            r["ticker"] for r in get_kospi200(conn)
-        }
-        # Build name→ticker map for bondweb company name matching
-        kospi200_name_map = {c["company"]: c["ticker"] for c in constituents} if constituents else {}
+        cached_constituents = constituents if constituents else [dict(r) for r in get_kospi200(conn)]
+        kospi200_tickers = {c["ticker"] for c in cached_constituents}
+        # Build name→ticker map for bondweb company name matching.
+        # Fall back to the cached DB snapshot so a transient refresh failure
+        # does not send every Bondweb report through Gemini.
+        kospi200_name_map = {c["company"]: c["ticker"] for c in cached_constituents}
 
         # Naver Finance — pre-filtered to KOSPI 200 tickers
         naver_reports = naver_fetch(pages=SCRAPE_PAGES, ticker_whitelist=kospi200_tickers)

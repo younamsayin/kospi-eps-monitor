@@ -4,4 +4,6 @@ lxml
 google-genai
 python-dotenv
 apscheduler
-slack-sdk
+pandas
+plotly
+streamlit
