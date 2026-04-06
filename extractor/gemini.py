@@ -42,10 +42,12 @@ Extract the following information and return ONLY valid JSON, no markdown, no ex
 
 Rules:
 - Include estimates for all fiscal years mentioned (typically current year + 1-2 forward years)
+- Focus on forward estimates (F, E, 전망치) rather than historical actuals when the report distinguishes them
 - report_date should be the actual publication date written in the PDF, not today's date
 - EPS (주당순이익 or EPS) should be in KRW per share
 - If a value is not found, use null
 - fiscal_year must be an integer (e.g. 2025, 2026)
+- Do not shift fiscal years left or right; preserve the fiscal year labels exactly as shown in the report
 - Return only the JSON object, nothing else
 """
 

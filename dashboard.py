@@ -151,8 +151,8 @@ st.divider()
 
 # ── Main tabs ─────────────────────────────────────────────────────────────────
 
-tab1, tab2, tab3, tab4 = st.tabs([
-    "Consensus", "Index Aggregate", "Recent Reports", "Revisions"
+tab1, tab2, tab3 = st.tabs([
+    "Consensus", "Recent Reports", "Revisions"
 ])
 
 
@@ -232,35 +232,7 @@ with tab1:
     else:
         st.subheader(f"Consensus FWD EPS {selected_year}E")
 
-        if not selected_ticker:
-            fig = go.Figure()
-            chart_data = consensus_df.dropna(subset=["wow_eps_change_pct"]).copy()
-            chart_data = chart_data.sort_values("wow_eps_change_pct", ascending=True).tail(30)
-            colors = ["#ef4444" if v < 0 else "#22c55e" for v in chart_data["wow_eps_change_pct"]]
-            fig.add_trace(go.Bar(
-                x=chart_data["wow_eps_change_pct"],
-                y=chart_data["company"],
-                orientation="h",
-                marker_color=colors,
-                text=[
-                    f"{v:+.1f}% ({n} brokers)"
-                    for v, n in zip(chart_data["wow_eps_change_pct"], chart_data["broker_count"])
-                ],
-                textposition="outside",
-            ))
-            fig.update_layout(
-                title=f"Consensus FWD EPS {selected_year}E — WoW Change",
-                xaxis_title="WoW Change (%)",
-                height=max(400, len(chart_data) * 28),
-                margin=dict(l=10, r=100, t=40, b=10),
-                plot_bgcolor="rgba(0,0,0,0)",
-                paper_bgcolor="rgba(0,0,0,0)",
-            )
-            if chart_data.empty:
-                st.info("Not enough history yet for a week-over-week consensus chart.")
-            else:
-                st.plotly_chart(fig, use_container_width=True)
-        else:
+        if selected_ticker:
             latest = consensus_df.iloc[0]
             metric_cols = st.columns(3)
             metric_cols[0].metric(
@@ -277,142 +249,227 @@ with tab1:
                 "Brokers",
                 int(latest["broker_count"]) if pd.notna(latest["broker_count"]) else 0,
             )
-
-        display_df = consensus_df.copy()
-        display_df.columns = [
-            "Ticker", "Company", "Brokers", "Consensus EPS", "Min EPS", "Max EPS",
-            "Consensus TP", "Min TP", "Max TP", "WoW Base EPS", "WoW Base TP",
-            "WoW EPS %", "WoW TP %"
-        ]
-        for col in ["Consensus EPS", "Min EPS", "Max EPS", "Consensus TP", "Min TP", "Max TP", "WoW Base EPS", "WoW Base TP"]:
-            display_df[col] = display_df[col].apply(lambda x: f"{x:,.0f}" if pd.notna(x) and x else "-")
-        for col in ["WoW EPS %", "WoW TP %"]:
-            display_df[col] = display_df[col].apply(lambda x: f"{x:+.2f}%" if pd.notna(x) else "-")
-        st.dataframe(display_df, use_container_width=True, hide_index=True)
-
-
-# ── Tab 2: Index Aggregate ───────────────────────────────────────────────────
-
-with tab2:
-    st.subheader("KOSPI 200 — Weekly Average FWD EPS")
-    st.caption("Weekly average of the aggregate latest consensus EPS across tracked companies.")
-
-    # Current year and next year side by side
-    this_year = selected_year
-    next_year = selected_year + 1
-
-    agg_df = q(f"""
-        WITH broker_daily_latest AS (
-            SELECT
-                e.ticker, e.broker, e.fiscal_year, e.fwd_eps,
-                DATE(e.extracted_at) AS extract_date,
-                ROW_NUMBER() OVER (
-                    PARTITION BY e.ticker, e.broker, e.fiscal_year, DATE(e.extracted_at)
-                    ORDER BY e.extracted_at DESC, e.id DESC
-                ) AS rn
-            FROM eps_estimates e
-            WHERE e.fiscal_year IN ({this_year}, {next_year}) AND e.fwd_eps IS NOT NULL
-        ),
-        daily_consensus AS (
-            SELECT
-                ticker,
-                fiscal_year,
-                extract_date,
-                AVG(fwd_eps) AS consensus_eps
-            FROM broker_daily_latest
-            WHERE rn = 1
-            GROUP BY ticker, fiscal_year, extract_date
-        )
-        SELECT
-            extract_date,
-            fiscal_year,
-            SUM(consensus_eps) AS total_eps,
-            COUNT(DISTINCT ticker) AS company_count
-        FROM daily_consensus
-        GROUP BY extract_date, fiscal_year
-        ORDER BY extract_date
-    """)
-
-    if agg_df.empty:
-        st.info("Not enough data for aggregate trend yet. Run the monitor for a few days.")
-    else:
-        agg_df["extract_date"] = pd.to_datetime(agg_df["extract_date"])
-        agg_df["week_start"] = agg_df["extract_date"].dt.to_period("W").apply(lambda p: p.start_time)
-        weekly_agg_df = (
-            agg_df.groupby(["week_start", "fiscal_year"], as_index=False)
-            .agg(
-                avg_total_eps=("total_eps", "mean"),
-                avg_company_count=("company_count", "mean"),
-            )
-            .sort_values(["fiscal_year", "week_start"])
-        )
-        fig = go.Figure()
-        for year in sorted(weekly_agg_df["fiscal_year"].unique()):
-            yr_df = weekly_agg_df[weekly_agg_df["fiscal_year"] == year]
-            fig.add_trace(go.Scatter(
-                x=yr_df["week_start"],
-                y=yr_df["avg_total_eps"],
-                mode="lines+markers",
-                name=f"{year}E",
-                hovertemplate="%{x}<br>Weekly Avg EPS: %{y:,.0f}<br>Avg Companies: %{customdata:.1f}<extra></extra>",
-                customdata=yr_df["avg_company_count"],
-            ))
-        if weekly_agg_df.empty:
-            st.info("Not enough history yet for a weekly aggregate chart.")
         else:
-            fig.update_layout(
-                xaxis_title="Week",
-                yaxis_title="Weekly Avg Aggregate EPS (KRW/share)",
-                height=400,
-                plot_bgcolor="rgba(0,0,0,0)",
-                paper_bgcolor="rgba(0,0,0,0)",
+            aggregate = consensus_df.agg({
+                "company": "count",
+                "consensus_eps": "mean",
+                "consensus_tp": "mean",
+                "broker_count": "sum",
+            })
+            metric_cols = st.columns(4)
+            metric_cols[0].metric("Companies", int(aggregate["company"]))
+            metric_cols[1].metric(
+                "Avg Consensus EPS",
+                f"{aggregate['consensus_eps']:,.0f}" if pd.notna(aggregate["consensus_eps"]) else "-",
             )
-            st.plotly_chart(fig, use_container_width=True)
+            metric_cols[2].metric(
+                "Avg Consensus TP",
+                f"{aggregate['consensus_tp']:,.0f}" if pd.notna(aggregate["consensus_tp"]) else "-",
+            )
+            metric_cols[3].metric("Broker Observations", int(aggregate["broker_count"]) if pd.notna(aggregate["broker_count"]) else 0)
 
-        # Snapshot table: current totals
-        st.subheader("Current Snapshot")
-        snapshot_df = q(f"""
-            WITH latest_per_broker AS (
-                SELECT e.ticker, r.company, e.broker, e.fiscal_year, e.fwd_eps, e.target_price,
-                       ROW_NUMBER() OVER (
-                           PARTITION BY e.ticker, e.broker, e.fiscal_year
-                           ORDER BY e.extracted_at DESC, e.id DESC
-                       ) AS rn
+        trend_title = (
+            f"Weekly Consensus Trend — {selected_company}"
+            if selected_ticker
+            else "Weekly Aggregate Consensus Trend — All Companies"
+        )
+        trend_caption = (
+            f"Weekly average consensus EPS and target price for the last 52 weeks ({selected_year}E)."
+            if selected_ticker
+            else f"Weekly average of company-level consensus EPS and target price for the last 52 weeks ({selected_year}E)."
+        )
+        st.subheader(trend_title)
+        st.caption(trend_caption)
+
+        trend_filter = "AND e.ticker = ?" if selected_ticker else ""
+        trend_params = (selected_ticker,) if selected_ticker else ()
+        trend_df = q(f"""
+            WITH broker_daily_latest AS (
+                SELECT
+                    e.ticker,
+                    e.broker,
+                    e.fiscal_year,
+                    e.fwd_eps,
+                    e.target_price,
+                    COALESCE(r.report_date, DATE(e.extracted_at)) AS report_day,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY e.ticker, e.broker, e.fiscal_year, COALESCE(r.report_date, DATE(e.extracted_at))
+                        ORDER BY r.report_date DESC, e.extracted_at DESC, e.id DESC
+                    ) AS rn
                 FROM eps_estimates e
                 JOIN analyst_reports r ON e.report_id = r.id
-                WHERE e.fiscal_year IN ({this_year}, {next_year}) AND e.fwd_eps IS NOT NULL
+                WHERE e.fiscal_year = {selected_year}
+                  AND (e.fwd_eps IS NOT NULL OR e.target_price IS NOT NULL)
+                  AND DATE(COALESCE(r.report_date, DATE(e.extracted_at))) >= DATE('now', '-364 day')
+                  {trend_filter}
             ),
-            consensus AS (
+            daily_consensus AS (
                 SELECT
                     ticker,
-                    company,
-                    fiscal_year,
+                    report_day,
                     AVG(fwd_eps) AS consensus_eps,
                     AVG(target_price) AS consensus_tp
-                FROM latest_per_broker
+                FROM broker_daily_latest
                 WHERE rn = 1
-                GROUP BY ticker, company, fiscal_year
+                GROUP BY ticker, report_day
+            ),
+            weekly_consensus AS (
+                SELECT
+                    DATE(report_day, '-' || ((CAST(strftime('%w', report_day) AS INTEGER) + 6) % 7) || ' days') AS week_start,
+                    AVG(consensus_eps) AS avg_consensus_eps,
+                    AVG(consensus_tp) AS avg_consensus_tp,
+                    COUNT(DISTINCT ticker) AS company_count
+                FROM daily_consensus
+                GROUP BY week_start
             )
-            SELECT fiscal_year,
-                   COUNT(DISTINCT ticker) AS companies,
-                   ROUND(SUM(consensus_eps), 0) AS total_eps,
-                   ROUND(AVG(consensus_eps), 0) AS avg_eps,
-                   ROUND(SUM(consensus_tp), 0) AS total_tp,
-                   ROUND(AVG(consensus_tp), 0) AS avg_tp
-            FROM consensus
-            GROUP BY fiscal_year
-        """)
-        if not snapshot_df.empty:
-            display_snap = snapshot_df.copy()
-            display_snap.columns = ["Year", "Companies", "Total EPS", "Avg EPS", "Total TP", "Avg TP"]
-            for col in ["Total EPS", "Avg EPS", "Total TP", "Avg TP"]:
-                display_snap[col] = display_snap[col].apply(lambda x: f"{x:,.0f}" if pd.notna(x) and x else "-")
-            st.dataframe(display_snap, use_container_width=True, hide_index=True)
+            SELECT
+                week_start,
+                avg_consensus_eps,
+                avg_consensus_tp,
+                company_count
+            FROM weekly_consensus
+            ORDER BY week_start DESC
+            LIMIT 52
+        """, trend_params)
+
+        if trend_df.empty:
+            st.info("Not enough history yet for a weekly consensus trend.")
+        else:
+            trend_df["week_start"] = pd.to_datetime(trend_df["week_start"])
+            trend_df = trend_df.sort_values("week_start")
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(
+                x=trend_df["week_start"],
+                y=trend_df["avg_consensus_eps"],
+                mode="lines+markers",
+                name="Avg EPS",
+                yaxis="y1",
+                hovertemplate="%{x}<br>Avg EPS: %{y:,.0f}<br>Companies: %{customdata}<extra></extra>",
+                customdata=trend_df["company_count"],
+            ))
+            layout_kwargs = {
+                "xaxis_title": "Week",
+                "yaxis": dict(title="Average EPS (KRW/share)"),
+                "height": 420,
+                "margin": dict(l=10, r=10, t=20, b=10),
+                "legend": dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+                "plot_bgcolor": "rgba(0,0,0,0)",
+                "paper_bgcolor": "rgba(0,0,0,0)",
+            }
+            if selected_ticker:
+                fig.add_trace(go.Scatter(
+                    x=trend_df["week_start"],
+                    y=trend_df["avg_consensus_tp"],
+                    mode="lines+markers",
+                    name="Avg TP",
+                    yaxis="y2",
+                    hovertemplate="%{x}<br>Avg TP: %{y:,.0f}<br>Companies: %{customdata}<extra></extra>",
+                    customdata=trend_df["company_count"],
+                ))
+                layout_kwargs["yaxis2"] = dict(title="Average TP (KRW)", overlaying="y", side="right")
+            fig.update_layout(**layout_kwargs)
+            st.plotly_chart(fig, use_container_width=True)
+
+        st.subheader("Latest Broker Reports")
+        latest_report_filter = "AND r.ticker = ?" if selected_ticker else ""
+        latest_report_params = (selected_ticker,) if selected_ticker else ()
+        latest_reports_df = q(f"""
+            WITH raw_report_rows AS (
+                SELECT
+                    r.report_date,
+                    r.ticker,
+                    r.company,
+                    e.broker,
+                    MAX(r.id) AS report_id,
+                    MAX(e.extracted_at) AS extracted_at,
+                    MAX(CASE WHEN e.fiscal_year = {selected_year} THEN e.fwd_eps END) AS eps_this_year,
+                    MAX(CASE WHEN e.fiscal_year = {selected_year + 1} THEN e.fwd_eps END) AS eps_next_year,
+                    MAX(e.target_price) AS target_price
+                FROM analyst_reports r
+                JOIN eps_estimates e ON e.report_id = r.id
+                WHERE r.ticker != '' {latest_report_filter}
+                GROUP BY r.report_date, r.ticker, r.company, e.broker
+            ),
+            report_rows AS (
+                SELECT
+                    *,
+                    LAG(eps_this_year) OVER (
+                        PARTITION BY ticker, broker
+                        ORDER BY report_date, extracted_at, report_id
+                    ) AS prev_eps_this_year,
+                    LAG(eps_next_year) OVER (
+                        PARTITION BY ticker, broker
+                        ORDER BY report_date, extracted_at, report_id
+                    ) AS prev_eps_next_year,
+                    LAG(target_price) OVER (
+                        PARTITION BY ticker, broker
+                        ORDER BY report_date, extracted_at, report_id
+                    ) AS prev_target_price
+                FROM raw_report_rows
+            ),
+            latest_per_broker AS (
+                SELECT
+                    rr.*,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY rr.ticker, rr.broker
+                        ORDER BY rr.report_date DESC, rr.extracted_at DESC, rr.report_id DESC
+                    ) AS rn
+                FROM report_rows rr
+            )
+            SELECT
+                report_date,
+                ticker,
+                company,
+                broker,
+                eps_this_year,
+                CASE
+                    WHEN prev_eps_this_year IS NOT NULL AND prev_eps_this_year != 0 AND eps_this_year IS NOT NULL
+                    THEN ROUND((eps_this_year - prev_eps_this_year) * 100.0 / ABS(prev_eps_this_year), 2)
+                    ELSE NULL
+                END AS eps_this_year_change_pct,
+                eps_next_year,
+                CASE
+                    WHEN prev_eps_next_year IS NOT NULL AND prev_eps_next_year != 0 AND eps_next_year IS NOT NULL
+                    THEN ROUND((eps_next_year - prev_eps_next_year) * 100.0 / ABS(prev_eps_next_year), 2)
+                    ELSE NULL
+                END AS eps_next_year_change_pct,
+                target_price,
+                CASE
+                    WHEN prev_target_price IS NOT NULL AND prev_target_price != 0 AND target_price IS NOT NULL
+                    THEN ROUND((target_price - prev_target_price) * 100.0 / ABS(prev_target_price), 2)
+                    ELSE NULL
+                END AS target_price_change_pct
+            FROM latest_per_broker
+            WHERE rn = 1
+            ORDER BY report_date DESC, ticker, broker
+        """, latest_report_params)
+
+        if latest_reports_df.empty:
+            st.info("No latest broker report rows available yet.")
+        else:
+            display_df = latest_reports_df.copy()
+            display_df.columns = [
+                "Date",
+                "Ticker",
+                "Company",
+                "Broker",
+                f"EPS {selected_year}E",
+                f"EPS {selected_year}E %",
+                f"EPS {selected_year + 1}E",
+                f"EPS {selected_year + 1}E %",
+                "TP",
+                "TP %",
+            ]
+            for col in [f"EPS {selected_year}E", f"EPS {selected_year + 1}E", "TP"]:
+                display_df[col] = display_df[col].apply(lambda x: f"{x:,.0f}" if pd.notna(x) and x else "-")
+            for col in [f"EPS {selected_year}E %", f"EPS {selected_year + 1}E %", "TP %"]:
+                display_df[col] = display_df[col].apply(lambda x: f"{x:+.2f}%" if pd.notna(x) else "-")
+            st.dataframe(display_df, use_container_width=True, hide_index=True)
 
 
-# ── Tab 3: Recent Reports ───────────────────────────────────────────────────
+# ── Tab 2: Recent Reports ───────────────────────────────────────────────────
 
-with tab3:
+with tab2:
     ticker_filter = "AND ticker = ?" if selected_ticker else ""
     params = (selected_ticker,) if selected_ticker else ()
 
@@ -445,9 +502,9 @@ with tab3:
             st.divider()
 
 
-# ── Tab 4: EPS & Target Price Revisions ──────────────────────────────────────
+# ── Tab 3: EPS & Target Price Revisions ──────────────────────────────────────
 
-with tab4:
+with tab3:
     ticker_filter = "AND e.ticker = ?" if selected_ticker else ""
     params = (selected_ticker,) if selected_ticker else ()
 

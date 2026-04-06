@@ -16,6 +16,7 @@ from db.models import (
     get_conn, init_db, upsert_kospi200, get_kospi200,
     report_exists, insert_report, insert_eps,
     get_previous_eps_record, get_previous_target_price_record,
+    get_latest_prior_report_estimates,
 )
 from scraper.krx import fetch_kospi200
 from scraper.naver import fetch_recent_reports as naver_fetch, download_pdf as naver_download
@@ -29,6 +30,88 @@ EPS_CHANGE_THRESHOLD = float(os.environ.get("EPS_CHANGE_THRESHOLD",
                              os.environ.get("EPS_UPGRADE_THRESHOLD", "0.02")))
 TP_CHANGE_THRESHOLD = float(os.environ.get("TP_CHANGE_THRESHOLD", "0.02"))
 SCRAPE_PAGES = int(os.environ.get("SCRAPE_PAGES", "10"))
+
+
+def _relative_gap(current: float, previous: float) -> float:
+    if previous in (None, 0):
+        return float("inf")
+    return abs(current - previous) / abs(previous)
+
+
+def _estimate_shift_score(current_map: dict, previous_map: dict, shift: int) -> tuple[float, int]:
+    score = 0.0
+    close_matches = 0
+    for fiscal_year, current_eps in current_map.items():
+        previous_eps = previous_map.get(fiscal_year + shift)
+        if previous_eps is None:
+            continue
+        gap = _relative_gap(current_eps, previous_eps)
+        score += max(0.0, 1.0 - min(gap, 1.0))
+        if gap <= 0.05:
+            close_matches += 1
+    return score, close_matches
+
+
+def _normalize_estimates(conn, report: dict, extracted: dict) -> list[dict]:
+    estimates = extracted.get("estimates") or []
+    normalized = []
+
+    for est in estimates:
+        if not isinstance(est, dict):
+            continue
+        fiscal_year = est.get("fiscal_year")
+        try:
+            fiscal_year = int(fiscal_year)
+        except (TypeError, ValueError):
+            continue
+        est = dict(est)
+        est["fiscal_year"] = fiscal_year
+        normalized.append(est)
+
+    if not normalized:
+        return []
+
+    report_year = None
+    report_date = report.get("report_date")
+    if report_date:
+        try:
+            report_year = int(str(report_date)[:4])
+        except (TypeError, ValueError):
+            report_year = None
+
+    current_map = {
+        est["fiscal_year"]: float(est["fwd_eps"])
+        for est in normalized
+        if est.get("fwd_eps") is not None
+    }
+    previous_map = {}
+    if report.get("ticker") and report.get("broker") and report_date:
+        previous_map = get_latest_prior_report_estimates(
+            conn,
+            report["ticker"],
+            report["broker"],
+            report_date,
+        )
+
+    if len(current_map) >= 3 and len(previous_map) >= 2:
+        no_shift_score, no_shift_matches = _estimate_shift_score(current_map, previous_map, 0)
+        shift_down_score, shift_down_matches = _estimate_shift_score(current_map, previous_map, -1)
+        if shift_down_matches >= 2 and shift_down_score > no_shift_score + 0.75:
+            for est in normalized:
+                est["fiscal_year"] -= 1
+            print(
+                f"    [!] Adjusted fiscal years down by 1 for {report['ticker']} / {report['broker']} "
+                f"based on same-broker prior report alignment."
+            )
+
+    deduped = {}
+    for est in normalized:
+        fy = est["fiscal_year"]
+        if report_year is not None and fy < report_year:
+            continue
+        deduped[fy] = est
+
+    return [deduped[fy] for fy in sorted(deduped)]
 
 
 def refresh_kospi200():
@@ -62,6 +145,8 @@ def process_report(conn, report: dict, pdf_bytes: bytes, kospi200_tickers: set):
     # Skip if still no ticker, or not in KOSPI 200
     if not report.get("ticker") or report["ticker"] not in kospi200_tickers:
         return
+
+    extracted["estimates"] = _normalize_estimates(conn, report, extracted)
 
     # --- Target price change detection (once per report, before inserting estimates) ---
     new_tp = extracted.get("target_price")

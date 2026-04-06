@@ -21,6 +21,9 @@
 - Added Bondweb company-search mode with per-company result caps, deduping, and console progress logging
 - Updated the Index Aggregate chart to plot weekly average aggregate EPS levels instead of daily totals or percentage changes
 - Hardened Bondweb PDF downloads so broker-side HTTP errors are logged and skipped instead of crashing the monitor
+- Redesigned the dashboard so `Consensus` handles both single-company and `All` views, with weekly EPS trends and a latest broker report table
+- Added monitor-side fiscal year sanity checks to correct one-year-shifted EPS series before saving and ignore pre-report-year rows
+- Fixed Telegram EPS/TP alert date comparisons so duplicate same-day ingestions do not produce `same date → same date` messages
 
 ## [0.1.0] - 2026-04-06
 

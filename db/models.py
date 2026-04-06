@@ -141,14 +141,11 @@ def get_previous_eps_record(conn, ticker: str, fiscal_year: int, broker: str, cu
         FROM eps_estimates e
         JOIN analyst_reports r ON e.report_id = r.id
         WHERE e.ticker = ? AND e.fiscal_year = ? AND e.broker = ?
-          AND (
-              r.report_date < ?
-              OR (r.report_date = ?)
-          )
+          AND r.report_date < ?
         ORDER BY r.report_date DESC, e.extracted_at DESC, e.id DESC
         LIMIT 1
         """,
-        (ticker, fiscal_year, broker, current_report_date, current_report_date),
+        (ticker, fiscal_year, broker, current_report_date),
     ).fetchone()
 
 
@@ -175,12 +172,50 @@ def get_previous_target_price_record(conn, ticker: str, broker: str, current_rep
         FROM eps_estimates e
         JOIN analyst_reports r ON e.report_id = r.id
         WHERE e.ticker = ? AND e.broker = ? AND e.target_price IS NOT NULL
-          AND (
-              r.report_date < ?
-              OR (r.report_date = ?)
-          )
+          AND r.report_date < ?
         ORDER BY r.report_date DESC, e.extracted_at DESC, e.id DESC
         LIMIT 1
         """,
-        (ticker, broker, current_report_date, current_report_date),
+        (ticker, broker, current_report_date),
     ).fetchone()
+
+
+def get_latest_prior_report_estimates(conn, ticker: str, broker: str, current_report_date):
+    latest_prior = conn.execute(
+        """
+        SELECT MAX(report_date) AS report_date
+        FROM analyst_reports
+        WHERE ticker = ? AND broker = ? AND report_date < ?
+        """,
+        (ticker, broker, current_report_date),
+    ).fetchone()
+
+    report_date = latest_prior["report_date"] if latest_prior else None
+    if not report_date:
+        return {}
+
+    rows = conn.execute(
+        """
+        WITH latest_per_year AS (
+            SELECT
+                e.fiscal_year,
+                e.fwd_eps,
+                ROW_NUMBER() OVER (
+                    PARTITION BY e.fiscal_year
+                    ORDER BY e.extracted_at DESC, e.id DESC
+                ) AS rn
+            FROM eps_estimates e
+            JOIN analyst_reports r ON e.report_id = r.id
+            WHERE e.ticker = ?
+              AND e.broker = ?
+              AND r.report_date = ?
+              AND e.fwd_eps IS NOT NULL
+        )
+        SELECT fiscal_year, fwd_eps
+        FROM latest_per_year
+        WHERE rn = 1
+        """,
+        (ticker, broker, report_date),
+    ).fetchall()
+
+    return {int(row["fiscal_year"]): float(row["fwd_eps"]) for row in rows if row["fiscal_year"] is not None}
