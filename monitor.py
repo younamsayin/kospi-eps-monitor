@@ -55,6 +55,10 @@ def process_report(conn, report: dict, pdf_bytes: bytes, kospi200_tickers: set):
         report["ticker"] = extracted["ticker"]
         report["company"] = extracted.get("company", "")
 
+    # Prefer the publication date printed in the PDF when available.
+    if extracted.get("report_date"):
+        report["report_date"] = extracted["report_date"]
+
     # Skip if still no ticker, or not in KOSPI 200
     if not report.get("ticker") or report["ticker"] not in kospi200_tickers:
         return

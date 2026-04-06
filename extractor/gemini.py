@@ -5,7 +5,9 @@ Gemini supports native PDF understanding — no pre-parsing needed.
 
 import os
 import json
+import re
 import tempfile
+from datetime import datetime
 from typing import Optional
 from google import genai
 from google.genai import types
@@ -24,6 +26,7 @@ Extract the following information and return ONLY valid JSON, no markdown, no ex
   "company": "company name in Korean",
   "ticker": "6-digit KRX ticker code if mentioned",
   "broker": "securities firm that wrote the report",
+  "report_date": "publication date written in the report, formatted as YYYY-MM-DD, or null",
   "recommendation": "BUY / HOLD / SELL or Korean equivalent",
   "target_price": <integer, target price in KRW, or null>,
   "estimates": [
@@ -39,6 +42,7 @@ Extract the following information and return ONLY valid JSON, no markdown, no ex
 
 Rules:
 - Include estimates for all fiscal years mentioned (typically current year + 1-2 forward years)
+- report_date should be the actual publication date written in the PDF, not today's date
 - EPS (주당순이익 or EPS) should be in KRW per share
 - If a value is not found, use null
 - fiscal_year must be an integer (e.g. 2025, 2026)
@@ -48,6 +52,30 @@ Rules:
 
 def _get_client() -> genai.Client:
     return genai.Client(api_key=os.environ["GEMINI_API_KEY"])
+
+
+def _normalize_report_date(value) -> Optional[str]:
+    if value in (None, ""):
+        return None
+    if not isinstance(value, str):
+        value = str(value)
+
+    value = value.strip()
+    for fmt in ("%Y-%m-%d", "%Y.%m.%d", "%Y/%m/%d", "%y.%m.%d", "%y/%m/%d"):
+        try:
+            return datetime.strptime(value, fmt).date().isoformat()
+        except ValueError:
+            continue
+
+    match = re.search(r"(\d{4})\s*[./년-]\s*(\d{1,2})\s*[./월-]\s*(\d{1,2})", value)
+    if match:
+        year, month, day = (int(part) for part in match.groups())
+        try:
+            return datetime(year, month, day).date().isoformat()
+        except ValueError:
+            return None
+
+    return None
 
 
 def _normalize_extraction_payload(payload) -> Optional[dict]:
@@ -68,6 +96,7 @@ def _normalize_extraction_payload(payload) -> Optional[dict]:
                 "company": dict_items[0].get("company", ""),
                 "ticker": dict_items[0].get("ticker", ""),
                 "broker": dict_items[0].get("broker", ""),
+                "report_date": dict_items[0].get("report_date"),
                 "recommendation": dict_items[0].get("recommendation"),
                 "target_price": dict_items[0].get("target_price"),
                 "estimates": dict_items,
@@ -80,6 +109,7 @@ def _normalize_extraction_payload(payload) -> Optional[dict]:
     payload.setdefault("company", "")
     payload.setdefault("ticker", "")
     payload.setdefault("broker", "")
+    payload["report_date"] = _normalize_report_date(payload.get("report_date"))
     payload.setdefault("recommendation", None)
     payload.setdefault("target_price", None)
 

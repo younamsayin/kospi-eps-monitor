@@ -14,6 +14,7 @@
 - Fixed revision ordering to compare older report dates to newer report dates consistently
 - Hardened Gemini extraction parsing so unexpected JSON list responses are normalized instead of crashing the monitor
 - Fixed the company-filtered consensus dashboard query to bind the selected ticker correctly
+- Updated report ingestion to prefer the publication date extracted from PDFs and sort recent reports newest-to-oldest by report date
 
 ## [0.1.0] - 2026-04-06
 

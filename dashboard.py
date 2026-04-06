@@ -404,7 +404,7 @@ with tab3:
         SELECT company, ticker, broker, title, report_date, report_url
         FROM analyst_reports
         WHERE ticker != '' {ticker_filter}
-        ORDER BY fetched_at DESC
+        ORDER BY report_date DESC, fetched_at DESC
         LIMIT 100
     """, params)
 
@@ -496,7 +496,7 @@ with tab4:
 
     # --- Target Price Revisions ---
     st.subheader("Target Price Revisions")
-    tp_filter = "AND report_tps.ticker = ?" if selected_ticker else ""
+    tp_filter = "AND e.ticker = ?" if selected_ticker else ""
     tp_rev = q(f"""
         WITH report_tps AS (
             SELECT
