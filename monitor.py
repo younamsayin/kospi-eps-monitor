@@ -24,7 +24,12 @@ from db.models import (
 )
 from scraper.krx import fetch_kospi200
 from scraper.naver import fetch_recent_reports as naver_fetch, download_pdf as naver_download
-from scraper.bondweb import fetch_recent_reports as bondweb_fetch, download_pdf as bondweb_download
+from scraper.bondweb import (
+    fetch_recent_reports as bondweb_fetch,
+    download_pdf as bondweb_download,
+    log_download_failure_summary as bondweb_log_download_failure_summary,
+    reset_download_failure_samples as bondweb_reset_download_failure_samples,
+)
 from extractor.gemini import extract_eps_from_pdf
 from alerts.telegram import send_eps_change_alert, send_target_price_change_alert
 
@@ -34,6 +39,8 @@ EPS_CHANGE_THRESHOLD = float(os.environ.get("EPS_CHANGE_THRESHOLD",
                              os.environ.get("EPS_UPGRADE_THRESHOLD", "0.02")))
 TP_CHANGE_THRESHOLD = float(os.environ.get("TP_CHANGE_THRESHOLD", "0.02"))
 SCRAPE_PAGES = int(os.environ.get("SCRAPE_PAGES", "10"))
+NAVER_SCRAPE_PAGES = int(os.environ.get("NAVER_SCRAPE_PAGES", os.environ.get("SCRAPE_PAGES", "30")))
+BONDWEB_SCRAPE_PAGES = int(os.environ.get("BONDWEB_SCRAPE_PAGES", os.environ.get("SCRAPE_PAGES", "10")))
 PROCESS_DELAY_SECONDS = float(os.environ.get("PROCESS_DELAY_SECONDS", "1"))
 REPORTS_DIR = os.environ.get(
     "REPORTS_DIR",
@@ -139,7 +146,7 @@ def _archive_report_pdf(report: dict, pdf_bytes: bytes) -> str:
     broker = _safe_filename_part(str(report.get("broker") or "unknown"), "unknown")
     title = _safe_filename_part(str(report.get("title") or "report"), "report")
 
-    target_dir = os.path.join(REPORTS_DIR, report_date, source)
+    target_dir = os.path.join(REPORTS_DIR, company, source, report_date)
     os.makedirs(target_dir, exist_ok=True)
 
     filename = f"{ticker}_{company}_{broker}_{title}.pdf"
@@ -284,16 +291,18 @@ def refresh_kospi200():
 def process_report(conn, report: dict, pdf_bytes: bytes, kospi200_tickers: set):
     """Extract EPS from a PDF, save to DB, and alert on changes."""
 
+    archived_path = report.get("local_pdf_path")
+    if not archived_path:
+        archived_path = _archive_report_pdf(report, pdf_bytes)
+        report["local_pdf_path"] = archived_path
+        logger.info("    Saved PDF: %s", archived_path)
+
     extracted = extract_eps_from_pdf(pdf_bytes)
     if not extracted:
         logger.warning("    [!] Gemini extraction failed, skipping.")
         return
 
     _apply_extracted_metadata(report, extracted)
-
-    archived_path = _archive_report_pdf(report, pdf_bytes)
-    report["local_pdf_path"] = archived_path
-    logger.info("    Saved PDF: %s", archived_path)
 
     # Skip if still no ticker, or not in KOSPI 200
     if not report.get("ticker") or report["ticker"] not in kospi200_tickers:
@@ -315,6 +324,8 @@ def process_report(conn, report: dict, pdf_bytes: bytes, kospi200_tickers: set):
 def run_source(conn, source_name: str, reports: list, download_fn, kospi200_tickers: set):
     total_reports = len(reports)
     logger.info("[%s] Found %s reports.", source_name, total_reports)
+    if source_name == "Bondweb":
+        bondweb_reset_download_failure_samples()
 
     processed = 0
     skipped_existing = 0
@@ -377,6 +388,10 @@ def run_source(conn, source_name: str, reports: list, download_fn, kospi200_tick
             continue
         report["pdf_hash"] = pdf_hash
 
+        archived_path = _archive_report_pdf(report, pdf_bytes)
+        report["local_pdf_path"] = archived_path
+        logger.info("    Saved PDF: %s", archived_path)
+
         process_report(conn, report, pdf_bytes, kospi200_tickers)
         processed += 1
         time.sleep(PROCESS_DELAY_SECONDS)
@@ -392,6 +407,8 @@ def run_source(conn, source_name: str, reports: list, download_fn, kospi200_tick
         skipped_duplicate_pdf,
         total_reports,
     )
+    if source_name == "Bondweb" and skipped_download:
+        bondweb_log_download_failure_summary()
 
 
 def run_once():
@@ -406,11 +423,11 @@ def run_once():
         kospi200_name_map = {c["company"]: c["ticker"] for c in cached_constituents}
 
         # Naver Finance — pre-filtered to KOSPI 200 tickers
-        naver_reports = naver_fetch(pages=SCRAPE_PAGES, ticker_whitelist=kospi200_tickers)
+        naver_reports = naver_fetch(pages=NAVER_SCRAPE_PAGES, ticker_whitelist=kospi200_tickers)
         run_source(conn, "Naver", naver_reports, naver_download, kospi200_tickers)
 
         # Bondweb — pre-filtered by company name match; remaining get Gemini extraction
-        bondweb_reports = bondweb_fetch(pages=SCRAPE_PAGES, ticker_whitelist=kospi200_name_map)
+        bondweb_reports = bondweb_fetch(pages=BONDWEB_SCRAPE_PAGES, ticker_whitelist=kospi200_name_map)
         run_source(conn, "Bondweb", bondweb_reports, bondweb_download, kospi200_tickers)
 
     finally:

@@ -8,6 +8,7 @@ import re
 import time
 import logging
 import httpx
+from collections import Counter
 from bs4 import BeautifulSoup
 from datetime import date, datetime
 from typing import Optional
@@ -35,6 +36,24 @@ LIST_PARAMS = {
     "ListEOF": "0",
 }
 logger = logging.getLogger(__name__)
+_DOWNLOAD_FAILURE_SAMPLES = []
+_MAX_DOWNLOAD_FAILURE_SAMPLES = 25
+
+
+def _looks_like_asp_runtime_error(response: httpx.Response) -> bool:
+    if response.status_code < 500:
+        return False
+    try:
+        body = response.content.decode("euc-kr", errors="replace")
+    except Exception:
+        body = response.text
+    body_lower = body.lower()
+    return (
+        "asp 0106" in body_lower
+        or "vbscript 런타임 오류" in body_lower
+        or "형식 불일치" in body
+        or "형식이 일치하지 않습니다" in body
+    )
 
 
 def fetch_recent_reports(pages: int = 3, ticker_whitelist: Optional[set] = None) -> list:
@@ -62,6 +81,53 @@ def fetch_recent_reports(pages: int = 3, ticker_whitelist: Optional[set] = None)
             break
 
     return _dedupe_reports(reports)
+
+
+def reset_download_failure_samples():
+    _DOWNLOAD_FAILURE_SAMPLES.clear()
+
+
+def _record_download_failure(report: Optional[dict], number: str, gn: str, exc: Exception):
+    if len(_DOWNLOAD_FAILURE_SAMPLES) >= _MAX_DOWNLOAD_FAILURE_SAMPLES:
+        return
+    _DOWNLOAD_FAILURE_SAMPLES.append(
+        {
+            "report_id": number,
+            "gn": gn,
+            "broker": (report or {}).get("broker", ""),
+            "ticker": (report or {}).get("ticker", ""),
+            "company": (report or {}).get("company", ""),
+            "title": (report or {}).get("title", ""),
+            "error": str(exc),
+        }
+    )
+
+
+def log_download_failure_summary(limit: int = 10):
+    if not _DOWNLOAD_FAILURE_SAMPLES:
+        return
+
+    logger.warning(
+        "[Bondweb] Download failure summary: %s sampled failure(s).",
+        len(_DOWNLOAD_FAILURE_SAMPLES),
+    )
+    broker_counts = Counter(sample["broker"] or "(unknown)" for sample in _DOWNLOAD_FAILURE_SAMPLES)
+    logger.warning(
+        "[Bondweb] Failure counts by broker: %s",
+        ", ".join(f"{broker}={count}" for broker, count in broker_counts.most_common()),
+    )
+    for idx, sample in enumerate(_DOWNLOAD_FAILURE_SAMPLES[:limit], start=1):
+        logger.warning(
+            "[Bondweb] Failure sample %s/%s: report_id=%s gn=%s broker=%s ticker=%s company=%s title=%s",
+            idx,
+            min(limit, len(_DOWNLOAD_FAILURE_SAMPLES)),
+            sample["report_id"],
+            sample["gn"],
+            sample["broker"] or "-",
+            sample["ticker"] or "-",
+            sample["company"] or "-",
+            sample["title"][:120] if sample["title"] else "-",
+        )
 
 
 def _normalize_text(text: str) -> str:
@@ -352,16 +418,49 @@ def download_pdf(report_url: str, report: Optional[dict] = None) -> Optional[byt
         for attempt in range(3):
             try:
                 resp = client.post(DOWNLOAD_URL, data={"number": number, "gn": gn})
+                if _looks_like_asp_runtime_error(resp):
+                    raise httpx.HTTPStatusError(
+                        "Bondweb returned a deterministic ASP runtime error for this report record",
+                        request=resp.request,
+                        response=resp,
+                    )
                 resp.raise_for_status()
                 break
             except httpx.HTTPError as exc:
                 last_exc = exc
+                deterministic_server_error = isinstance(exc, httpx.HTTPStatusError) and (
+                    exc.response is not None and _looks_like_asp_runtime_error(exc.response)
+                )
                 if attempt == 2:
                     label = report.get("title", report_url) if report else report_url
-                    logger.warning("Bondweb download failed for %s: %s", label, exc)
+                    _record_download_failure(report, number, gn, exc)
+                    logger.warning(
+                        "Bondweb download failed for %s (report_id=%s, gn=%s): %s",
+                        label,
+                        number,
+                        gn,
+                        exc,
+                    )
+                    return None
+                if deterministic_server_error:
+                    label = report.get("title", report_url) if report else report_url
+                    _record_download_failure(report, number, gn, exc)
+                    logger.warning(
+                        "Bondweb record is broken on the server for %s (report_id=%s, gn=%s): %s",
+                        label,
+                        number,
+                        gn,
+                        exc,
+                    )
                     return None
                 delay = 2 ** attempt
-                logger.warning("Bondweb PDF download failed: %s. Retrying in %ss", exc, delay)
+                logger.warning(
+                    "Bondweb PDF download failed (report_id=%s, gn=%s): %s. Retrying in %ss",
+                    number,
+                    gn,
+                    exc,
+                    delay,
+                )
                 time.sleep(delay)
 
         if len(resp.content) < 1000:  # too small to be a real PDF

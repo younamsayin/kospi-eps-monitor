@@ -32,6 +32,15 @@
 - Added scraper retries, configurable user agents, and parse-error logging for Naver, Bondweb, and KRX fetches
 - Filtered consensus views to recent estimates, added cached dashboard queries, and exposed company-count context in the aggregate weekly chart
 - Added a small pytest-based helper test suite and ignored the local `reports/` archive directory in git
+- Reduced monitor terminal noise by suppressing verbose library request logs and batching repeated skip progress lines
+- Fixed the filtered `Consensus` tab to use the correct SQL parameter order for selected-company views
+- Added a reusable historical fiscal-year cleanup script for repairing high-confidence shifted EPS series in the existing DB
+- Fixed the `Consensus` and per-company `Revisions` charts to keep a fixed one-year X-axis window
+- Changed report archiving to happen immediately after successful download, even if Gemini extraction later fails
+- Reorganized archived PDFs from `date/source/file` to `company/source/date/file` and added scripts to backfill missing archives and migrate existing files
+- Added Bondweb failure diagnostics with exact `report_id` / `gn` logging, broker-level failure summaries, and fast-fail handling for deterministic ASP runtime-error records
+- Switched Naver scraping to default to per-company `itemCode` search for monitored tickers while capping the search to the most recent 10 reports from a single page per company
+- Added visible Naver per-ticker progress logging during company-search scraping
 
 ## [0.1.0] - 2026-04-06
 

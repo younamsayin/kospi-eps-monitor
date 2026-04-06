@@ -25,6 +25,8 @@ HEADERS = {
     "Accept-Language": "ko-KR,ko;q=0.9",
 }
 logger = logging.getLogger(__name__)
+MAX_COMPANY_SEARCH_PAGES = 1
+MAX_COMPANY_REPORTS = 10
 
 
 def _request_with_retry(client: httpx.Client, method: str, url: str, **kwargs) -> httpx.Response:
@@ -55,8 +57,10 @@ def fetch_recent_reports(pages: int = 3, ticker_whitelist: Optional[set] = None)
     Returns:
         List of report dicts: {ticker, company, broker, title, report_url, report_date}
     """
-    reports = []
+    if ticker_whitelist:
+        return _fetch_reports_by_ticker_search(ticker_whitelist, pages=min(max(1, pages), MAX_COMPANY_SEARCH_PAGES))
 
+    reports = []
     with httpx.Client(timeout=30, headers=HEADERS) as client:
         for page in range(1, pages + 1):
             params = {"pageSize": "20", "page": str(page)}
@@ -68,10 +72,48 @@ def fetch_recent_reports(pages: int = 3, ticker_whitelist: Optional[set] = None)
             if not page_reports:
                 break
 
-    if ticker_whitelist:
-        reports = [r for r in reports if r["ticker"] in ticker_whitelist]
+    return _dedupe_reports(reports)
 
-    return reports
+
+def _fetch_reports_by_ticker_search(ticker_whitelist: set, pages: int) -> list:
+    reports = []
+    tickers = sorted(str(ticker).zfill(6) for ticker in ticker_whitelist)
+    total_tickers = len(tickers)
+
+    with httpx.Client(timeout=30, headers=HEADERS) as client:
+        for idx, ticker in enumerate(tickers, start=1):
+            print(f"[Naver] Searching ticker {ticker} [{idx}/{total_tickers}]")
+            ticker_reports = []
+            for page in range(1, min(pages, MAX_COMPANY_SEARCH_PAGES) + 1):
+                params = {
+                    "searchType": "itemCode",
+                    "itemCode": ticker,
+                    "page": str(page),
+                }
+                resp = _request_with_retry(client, "GET", NAVER_RESEARCH_URL, params=params)
+                page_reports = _parse_report_list(resp.text)
+                ticker_reports.extend(page_reports)
+                print(f"    page {page}: {len(page_reports)} raw hits")
+                if not page_reports:
+                    break
+            ticker_reports = _dedupe_reports(ticker_reports)
+            ticker_reports = ticker_reports[:MAX_COMPANY_REPORTS]
+            print(f"[Naver] Collected {len(ticker_reports)} report(s) for {ticker}")
+            reports.extend(ticker_reports)
+
+    return _dedupe_reports(reports)
+
+
+def _dedupe_reports(reports: list) -> list:
+    deduped = []
+    seen_urls = set()
+    for report in reports:
+        report_url = report.get("report_url")
+        if not report_url or report_url in seen_urls:
+            continue
+        seen_urls.add(report_url)
+        deduped.append(report)
+    return deduped
 
 
 def _parse_report_list(html: str) -> list:

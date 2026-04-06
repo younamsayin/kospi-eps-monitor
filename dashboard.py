@@ -1,5 +1,6 @@
 import sqlite3
 import os
+from datetime import date, timedelta
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
@@ -436,6 +437,8 @@ with tab1:
         else:
             trend_df["week_start"] = pd.to_datetime(trend_df["week_start"])
             trend_df = trend_df.sort_values("week_start")
+            range_end = pd.Timestamp(date.today())
+            range_start = pd.Timestamp(date.today() - timedelta(weeks=52))
             fig = go.Figure()
             fig.add_trace(go.Scatter(
                 x=trend_df["week_start"],
@@ -447,7 +450,10 @@ with tab1:
                 customdata=trend_df["company_count"],
             ))
             layout_kwargs = {
-                "xaxis_title": "Week",
+                "xaxis": dict(
+                    title="Week",
+                    range=[range_start, range_end],
+                ),
                 "yaxis": dict(title="Average EPS (KRW/share)"),
                 "height": 420,
                 "margin": dict(l=10, r=10, t=20, b=10),
@@ -788,6 +794,8 @@ with tab3:
         """, (selected_ticker,))
 
         if not history_df.empty:
+            range_end = pd.Timestamp(date.today())
+            range_start = pd.Timestamp(date.today() - timedelta(weeks=52))
             fig = go.Figure()
             for year in sorted(history_df["fiscal_year"].unique()):
                 yr_df = history_df[history_df["fiscal_year"] == year]
@@ -798,7 +806,10 @@ with tab3:
                     name=f"{year}E",
                 ))
             fig.update_layout(
-                xaxis_title="Date",
+                xaxis=dict(
+                    title="Date",
+                    range=[range_start, range_end],
+                ),
                 yaxis_title="EPS (KRW/share)",
                 height=350,
                 plot_bgcolor="rgba(0,0,0,0)",
