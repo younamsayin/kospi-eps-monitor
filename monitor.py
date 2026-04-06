@@ -12,6 +12,7 @@ import os
 import hashlib
 import re
 import time
+import logging
 from dotenv import load_dotenv
 
 from db.models import (
@@ -33,10 +34,12 @@ EPS_CHANGE_THRESHOLD = float(os.environ.get("EPS_CHANGE_THRESHOLD",
                              os.environ.get("EPS_UPGRADE_THRESHOLD", "0.02")))
 TP_CHANGE_THRESHOLD = float(os.environ.get("TP_CHANGE_THRESHOLD", "0.02"))
 SCRAPE_PAGES = int(os.environ.get("SCRAPE_PAGES", "10"))
+PROCESS_DELAY_SECONDS = float(os.environ.get("PROCESS_DELAY_SECONDS", "1"))
 REPORTS_DIR = os.environ.get(
     "REPORTS_DIR",
     os.path.join(os.path.dirname(__file__), "reports"),
 )
+logger = logging.getLogger(__name__)
 
 
 def _relative_gap(current: float, previous: float) -> float:
@@ -148,73 +151,44 @@ def _archive_report_pdf(report: dict, pdf_bytes: bytes) -> str:
     return path
 
 
-def refresh_kospi200():
-    print("[KRX] Fetching KOSPI 200 constituents...")
-    constituents = fetch_kospi200()
-    if constituents:
-        upsert_kospi200(constituents)
-        print(f"[KRX] Updated {len(constituents)} constituents.")
-    else:
-        print("[KRX] Warning: no constituents returned — check KRX scraper.")
-    return constituents
-
-
-def process_report(conn, report: dict, pdf_bytes: bytes, kospi200_tickers: set):
-    """Extract EPS from a PDF, save to DB, and alert on changes."""
-
-    extracted = extract_eps_from_pdf(pdf_bytes)
-    if not extracted:
-        print(f"    [!] Gemini extraction failed, skipping.")
-        return
-
-    # For bondweb reports, ticker/company come from Gemini extraction
+def _apply_extracted_metadata(report: dict, extracted: dict):
     if not report.get("ticker") and extracted.get("ticker"):
         report["ticker"] = extracted["ticker"]
         report["company"] = extracted.get("company", "")
-
-    # Prefer the publication date printed in the PDF when available.
     if extracted.get("report_date"):
         report["report_date"] = extracted["report_date"]
 
-    archived_path = _archive_report_pdf(report, pdf_bytes)
-    report["local_pdf_path"] = archived_path
-    print(f"    Saved PDF: {archived_path}")
 
-    # Skip if still no ticker, or not in KOSPI 200
-    if not report.get("ticker") or report["ticker"] not in kospi200_tickers:
+def _alert_target_price_change(conn, report: dict, extracted: dict):
+    new_tp = extracted.get("target_price")
+    if not new_tp:
         return
 
-    extracted["estimates"] = _normalize_estimates(conn, report, extracted)
-
-    # --- Target price change detection (once per report, before inserting estimates) ---
-    new_tp = extracted.get("target_price")
-    if new_tp:
-        prev_tp_row = get_previous_target_price_record(
-            conn,
-            report["ticker"],
-            report["broker"],
-            report["report_date"],
+    prev_tp_row = get_previous_target_price_record(
+        conn,
+        report["ticker"],
+        report["broker"],
+        report["report_date"],
+    )
+    prev_tp = float(prev_tp_row["target_price"]) if prev_tp_row else None
+    if prev_tp and abs(new_tp - prev_tp) / abs(prev_tp) > TP_CHANGE_THRESHOLD:
+        direction = "RAISED" if new_tp > prev_tp else "CUT"
+        logger.info("[TP %s] %s: %s -> %s", direction, report["ticker"], f"{prev_tp:,.0f}", f"{new_tp:,.0f}")
+        send_target_price_change_alert(
+            ticker=report["ticker"],
+            company=report["company"],
+            broker=report["broker"],
+            prev_tp=prev_tp,
+            new_tp=new_tp,
+            prev_report_date=prev_tp_row["report_date"] if prev_tp_row else None,
+            new_report_date=report["report_date"],
+            recommendation=extracted.get("recommendation"),
+            report_url=report["report_url"],
         )
-        prev_tp = float(prev_tp_row["target_price"]) if prev_tp_row else None
-        if prev_tp and abs(new_tp - prev_tp) / abs(prev_tp) > TP_CHANGE_THRESHOLD:
-            direction = "RAISED" if new_tp > prev_tp else "CUT"
-            print(f"    [TP {direction}] {report['ticker']}: {prev_tp:,.0f} → {new_tp:,.0f}")
-            send_target_price_change_alert(
-                ticker=report["ticker"],
-                company=report["company"],
-                broker=report["broker"],
-                prev_tp=prev_tp,
-                new_tp=new_tp,
-                prev_report_date=prev_tp_row["report_date"] if prev_tp_row else None,
-                new_report_date=report["report_date"],
-                recommendation=extracted.get("recommendation"),
-                report_url=report["report_url"],
-            )
 
-    # --- Insert report and estimates ---
-    report_id = insert_report(conn, report)
-    conn.commit()
 
+def _insert_report_estimates(conn, report_id: int, report: dict, extracted: dict):
+    new_tp = extracted.get("target_price")
     for est in extracted.get("estimates", []):
         fiscal_year = est.get("fiscal_year")
         new_eps = est.get("fwd_eps")
@@ -240,12 +214,10 @@ def process_report(conn, report: dict, pdf_bytes: bytes, kospi200_tickers: set):
             "target_price": new_tp,
             "recommendation": extracted.get("recommendation"),
         })
-        conn.commit()
 
-        # Alert if EPS changed beyond threshold (upgrade OR downgrade)
         if prev_eps and abs(new_eps - prev_eps) / abs(prev_eps) > EPS_CHANGE_THRESHOLD:
             direction = "UPGRADE" if new_eps > prev_eps else "DOWNGRADE"
-            print(f"    [{direction}] {report['ticker']} {fiscal_year}E: {prev_eps:,.0f} → {new_eps:,.0f}")
+            logger.info("[%s] %s %sE: %s -> %s", direction, report["ticker"], fiscal_year, f"{prev_eps:,.0f}", f"{new_eps:,.0f}")
             send_eps_change_alert(
                 ticker=report["ticker"],
                 company=report["company"],
@@ -261,32 +233,74 @@ def process_report(conn, report: dict, pdf_bytes: bytes, kospi200_tickers: set):
             )
 
 
+def refresh_kospi200():
+    logger.info("[KRX] Fetching KOSPI 200 constituents...")
+    constituents = fetch_kospi200()
+    if constituents:
+        upsert_kospi200(constituents)
+        logger.info("[KRX] Updated %s constituents.", len(constituents))
+    else:
+        logger.warning("[KRX] Warning: no constituents returned — check KRX scraper.")
+    return constituents
+
+
+def process_report(conn, report: dict, pdf_bytes: bytes, kospi200_tickers: set):
+    """Extract EPS from a PDF, save to DB, and alert on changes."""
+
+    extracted = extract_eps_from_pdf(pdf_bytes)
+    if not extracted:
+        logger.warning("    [!] Gemini extraction failed, skipping.")
+        return
+
+    _apply_extracted_metadata(report, extracted)
+
+    archived_path = _archive_report_pdf(report, pdf_bytes)
+    report["local_pdf_path"] = archived_path
+    logger.info("    Saved PDF: %s", archived_path)
+
+    # Skip if still no ticker, or not in KOSPI 200
+    if not report.get("ticker") or report["ticker"] not in kospi200_tickers:
+        return
+
+    extracted["estimates"] = _normalize_estimates(conn, report, extracted)
+
+    _alert_target_price_change(conn, report, extracted)
+
+    report_id = insert_report(conn, report)
+    if not report_id:
+        logger.warning("    [!] Report insert was ignored due to duplicate key, skipping estimates.")
+        conn.rollback()
+        return
+    _insert_report_estimates(conn, report_id, report, extracted)
+    conn.commit()
+
+
 def run_source(conn, source_name: str, reports: list, download_fn, kospi200_tickers: set):
-    print(f"[{source_name}] Found {len(reports)} reports.")
+    logger.info("[%s] Found %s reports.", source_name, len(reports))
 
     for report in reports:
         if report_exists(conn, report["report_url"]):
             continue
 
         label = f"{report['company']} ({report['ticker']})" if report.get("ticker") else report["title"][:40]
-        print(f"  Processing: {label} — {report['broker']}")
+        logger.info("  Processing: %s — %s", label, report["broker"])
 
         try:
             pdf_bytes = download_fn(report["report_url"], report)
         except TypeError:
             pdf_bytes = download_fn(report["report_url"])
         if not pdf_bytes:
-            print(f"    [!] Could not download PDF, skipping.")
+            logger.warning("    [!] Could not download PDF, skipping.")
             continue
 
         pdf_hash = hashlib.sha256(pdf_bytes).hexdigest()
         if report_exists_by_pdf_hash(conn, pdf_hash):
-            print(f"    [!] Duplicate PDF content already saved, skipping.")
+            logger.warning("    [!] Duplicate PDF content already saved, skipping.")
             continue
         report["pdf_hash"] = pdf_hash
 
         process_report(conn, report, pdf_bytes, kospi200_tickers)
-        time.sleep(1)  # be polite to Gemini API
+        time.sleep(PROCESS_DELAY_SECONDS)
 
 
 def run_once():
@@ -317,13 +331,17 @@ def run_scheduled(interval_minutes: int = 1440):
 
     scheduler = BlockingScheduler()
     scheduler.add_job(run_once, "interval", minutes=interval_minutes)
-    print(f"[Monitor] Starting — checking every {interval_minutes} minutes.")
+    logger.info("[Monitor] Starting — checking every %s minutes.", interval_minutes)
     run_once()  # run immediately on start
     scheduler.start()
 
 
 if __name__ == "__main__":
     import sys
+    logging.basicConfig(
+        level=os.environ.get("LOG_LEVEL", "INFO").upper(),
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
 
     init_db()
 

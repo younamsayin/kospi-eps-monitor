@@ -3,6 +3,9 @@ Scrapes Naver Finance research page for new analyst reports.
 URL: https://finance.naver.com/research/company_list.naver
 """
 
+import os
+import time
+import logging
 import httpx
 import json
 import re
@@ -14,12 +17,31 @@ from urllib.parse import urljoin, urlparse
 
 NAVER_RESEARCH_URL = "https://finance.naver.com/research/company_list.naver"
 NAVER_RESEARCH_BASE_URL = "https://finance.naver.com/research/"
+DEFAULT_USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+    "User-Agent": os.environ.get("SCRAPER_USER_AGENT", DEFAULT_USER_AGENT),
     "Referer": "https://finance.naver.com/research/",
     "Accept-Language": "ko-KR,ko;q=0.9",
 }
+logger = logging.getLogger(__name__)
+
+
+def _request_with_retry(client: httpx.Client, method: str, url: str, **kwargs) -> httpx.Response:
+    last_exc = None
+    for attempt in range(3):
+        try:
+            resp = client.request(method, url, **kwargs)
+            resp.raise_for_status()
+            return resp
+        except httpx.HTTPError as exc:
+            last_exc = exc
+            if attempt == 2:
+                raise
+            delay = 2 ** attempt
+            logger.warning("Naver request failed (%s %s): %s. Retrying in %ss", method, url, exc, delay)
+            time.sleep(delay)
+    raise last_exc
 
 
 def fetch_recent_reports(pages: int = 3, ticker_whitelist: Optional[set] = None) -> list:
@@ -38,8 +60,7 @@ def fetch_recent_reports(pages: int = 3, ticker_whitelist: Optional[set] = None)
     with httpx.Client(timeout=30, headers=HEADERS) as client:
         for page in range(1, pages + 1):
             params = {"pageSize": "20", "page": str(page)}
-            resp = client.get(NAVER_RESEARCH_URL, params=params)
-            resp.raise_for_status()
+            resp = _request_with_retry(client, "GET", NAVER_RESEARCH_URL, params=params)
 
             page_reports = _parse_report_list(resp.text)
             reports.extend(page_reports)
@@ -112,7 +133,8 @@ def _parse_report_list(html: str) -> list:
                         "report_date": report_date,
                     }
                 )
-        except Exception:
+        except Exception as exc:
+            logger.warning("Failed to parse Naver report row: %s", exc)
             continue
 
     return reports
@@ -206,12 +228,13 @@ def _resolve_shinhan_pdf_url(client: httpx.Client, external_url: str, report: Op
             continue
         seen.add(query)
         try:
-            resp = client.post(
+            resp = _request_with_retry(
+                client,
+                "POST",
                 search_url,
                 data={"startCount": 0, "listCount": 10, "query": query, "searchType": "A", "boardCode": ""},
                 headers={"Referer": external_url},
             )
-            resp.raise_for_status()
             body = resp.json().get("body", {})
             collections = body.get("collectionList", [])
             if not collections:
@@ -246,8 +269,7 @@ def _resolve_external_pdf_url(client: httpx.Client, external_url: str, report: O
             return resolved
 
     try:
-        resp = client.get(external_url)
-        resp.raise_for_status()
+        resp = _request_with_retry(client, "GET", external_url)
     except httpx.HTTPError:
         return None
 
@@ -262,8 +284,7 @@ def download_pdf(pdf_url: str, report: Optional[dict] = None) -> Optional[bytes]
     with httpx.Client(timeout=60, headers=HEADERS, follow_redirects=True) as client:
         target_url = pdf_url
         if "company_read.naver" in pdf_url:
-            page_resp = client.get(pdf_url)
-            page_resp.raise_for_status()
+            page_resp = _request_with_retry(client, "GET", pdf_url)
             resolved_pdf_url = _extract_pdf_url_from_report_page(page_resp.text, str(page_resp.url))
             if resolved_pdf_url:
                 target_url = resolved_pdf_url
@@ -276,8 +297,7 @@ def download_pdf(pdf_url: str, report: Optional[dict] = None) -> Optional[bytes]
                     return None
                 target_url = resolved_external_pdf_url
 
-        resp = client.get(target_url)
-        resp.raise_for_status()
+        resp = _request_with_retry(client, "GET", target_url)
         content_type = resp.headers.get("content-type", "")
         if "text/html" in content_type:  # got an error page instead of PDF
             return None

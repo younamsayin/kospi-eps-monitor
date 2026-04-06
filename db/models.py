@@ -120,12 +120,12 @@ def report_exists_by_pdf_hash(conn, pdf_hash: str) -> bool:
 def insert_report(conn, report: dict) -> int:
     cur = conn.execute(
         """
-        INSERT INTO analyst_reports (ticker, company, broker, source, title, report_url, pdf_hash, report_date)
+        INSERT OR IGNORE INTO analyst_reports (ticker, company, broker, source, title, report_url, pdf_hash, report_date)
         VALUES (:ticker, :company, :broker, :source, :title, :report_url, :pdf_hash, :report_date)
         """,
         report,
     )
-    return cur.lastrowid
+    return cur.lastrowid or 0
 
 
 def insert_eps(conn, estimate: dict):

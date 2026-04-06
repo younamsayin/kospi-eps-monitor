@@ -28,6 +28,10 @@
 - Tightened Bondweb company matching so shorter company names no longer match inside brokerage names like `현대차증권`
 - Added PDF SHA-256 deduplication so identical reports are skipped even when they arrive under different URLs
 - Fixed the `pdf_hash` schema migration path so older SQLite databases can add the new column and index safely
+- Hardened Gemini extraction cleanup and payload validation, including temp/upload cleanup and rejecting ambiguous multi-company payloads
+- Added scraper retries, configurable user agents, and parse-error logging for Naver, Bondweb, and KRX fetches
+- Filtered consensus views to recent estimates, added cached dashboard queries, and exposed company-count context in the aggregate weekly chart
+- Added a small pytest-based helper test suite and ignored the local `reports/` archive directory in git
 
 ## [0.1.0] - 2026-04-06
 

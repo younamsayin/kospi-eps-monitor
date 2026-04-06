@@ -1,4 +1,6 @@
 import os
+import html
+import logging
 import httpx
 from typing import Optional
 from dotenv import load_dotenv
@@ -8,6 +10,7 @@ load_dotenv()
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 TELEGRAM_API = "https://api.telegram.org/bot{token}/sendMessage"
+logger = logging.getLogger(__name__)
 
 
 def _send(text: str):
@@ -22,7 +25,7 @@ def _send(text: str):
     with httpx.Client(timeout=10) as client:
         resp = client.post(TELEGRAM_API.format(token=TELEGRAM_BOT_TOKEN), json=payload)
         if resp.status_code != 200:
-            print(f"[Alert] Telegram error {resp.status_code}: {resp.text}")
+            logger.warning("Telegram error %s: %s", resp.status_code, resp.text)
 
 
 def send_eps_change_alert(
@@ -39,7 +42,7 @@ def send_eps_change_alert(
     report_url: str,
 ):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        print(f"[Alert] Telegram not configured. Skipping alert for {ticker}.")
+        logger.warning("Telegram not configured. Skipping alert for %s.", ticker)
         return
 
     pct_change = (new_eps - prev_eps) / abs(prev_eps) * 100 if prev_eps else 0
@@ -59,7 +62,8 @@ def send_eps_change_alert(
         lines.append(f"  Target: {target_price:,}원")
     if recommendation:
         lines.append(f"  {recommendation}")
-    lines.append(f'  <a href="{report_url}">View Report</a>')
+    safe_url = html.escape(report_url, quote=True)
+    lines.append(f'  <a href="{safe_url}">View Report</a>')
 
     _send("\n".join(lines))
 
@@ -93,6 +97,7 @@ def send_target_price_change_alert(
         lines.append(f"  Dates: {prev_report_date or '-'} → {new_report_date or '-'}")
     if recommendation:
         lines.append(f"  {recommendation}")
-    lines.append(f'  <a href="{report_url}">View Report</a>')
+    safe_url = html.escape(report_url, quote=True)
+    lines.append(f'  <a href="{safe_url}">View Report</a>')
 
     _send("\n".join(lines))

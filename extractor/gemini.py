@@ -7,6 +7,8 @@ import os
 import json
 import re
 import tempfile
+import time
+import logging
 from datetime import datetime
 from typing import Optional
 from google import genai
@@ -16,6 +18,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.1-flash-lite-preview")
+logger = logging.getLogger(__name__)
 
 EXTRACTION_PROMPT = """
 You are a financial analyst assistant. This is a Korean stock analyst report (증권사 리포트).
@@ -53,7 +56,10 @@ Rules:
 
 
 def _get_client() -> genai.Client:
-    return genai.Client(api_key=os.environ["GEMINI_API_KEY"])
+    api_key = os.environ.get("GEMINI_API_KEY")
+    if not api_key:
+        raise EnvironmentError("GEMINI_API_KEY is required")
+    return genai.Client(api_key=api_key)
 
 
 def _normalize_report_date(value) -> Optional[str]:
@@ -88,12 +94,21 @@ def _normalize_extraction_payload(payload) -> Optional[dict]:
         elif isinstance(payload.get("result"), dict):
             payload = payload["result"]
     elif isinstance(payload, list):
-        # Gemini occasionally returns a one-item JSON array even when asked
-        # for a single object.
         dict_items = [item for item in payload if isinstance(item, dict)]
         if len(dict_items) == 1:
             payload = dict_items[0]
         elif dict_items:
+            tickers = {str(item.get("ticker") or "").strip() for item in dict_items}
+            companies = {str(item.get("company") or "").strip() for item in dict_items}
+            tickers.discard("")
+            companies.discard("")
+            if len(tickers) > 1 or len(companies) > 1:
+                logger.warning(
+                    "Gemini returned multi-company payload; skipping ambiguous extraction: tickers=%s companies=%s",
+                    sorted(tickers),
+                    sorted(companies),
+                )
+                return None
             payload = {
                 "company": dict_items[0].get("company", ""),
                 "ticker": dict_items[0].get("ticker", ""),
@@ -131,25 +146,51 @@ def extract_eps_from_pdf(pdf_bytes: bytes) -> Optional[dict]:
     """
     try:
         client = _get_client()
-
+        tmp_path = None
+        uploaded = None
         with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
             tmp.write(pdf_bytes)
             tmp_path = tmp.name
 
-        uploaded = client.files.upload(
-            file=tmp_path,
-            config=types.UploadFileConfig(mime_type="application/pdf"),
-        )
-        os.unlink(tmp_path)
+        try:
+            uploaded = client.files.upload(
+                file=tmp_path,
+                config=types.UploadFileConfig(mime_type="application/pdf"),
+            )
 
-        response = client.models.generate_content(
-            model=MODEL,
-            contents=[uploaded, EXTRACTION_PROMPT],
-            config=types.GenerateContentConfig(
-                temperature=0,
-                response_mime_type="application/json",
-            ),
-        )
+            response = None
+            last_exc = None
+            for attempt in range(3):
+                try:
+                    response = client.models.generate_content(
+                        model=MODEL,
+                        contents=[uploaded, EXTRACTION_PROMPT],
+                        config=types.GenerateContentConfig(
+                            temperature=0,
+                            response_mime_type="application/json",
+                        ),
+                    )
+                    last_exc = None
+                    break
+                except Exception as exc:
+                    last_exc = exc
+                    if "429" in str(exc) and attempt < 2:
+                        delay = 2 ** attempt
+                        logger.warning("Gemini rate limited; retrying in %ss", delay)
+                        time.sleep(delay)
+                        continue
+                    raise
+
+            if response is None and last_exc:
+                raise last_exc
+        finally:
+            if tmp_path and os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+            if uploaded is not None:
+                try:
+                    client.files.delete(name=uploaded.name)
+                except Exception as cleanup_exc:
+                    logger.warning("Failed to delete uploaded Gemini file %s: %s", uploaded.name, cleanup_exc)
 
         raw = response.text.strip()
         if raw.startswith("```"):
@@ -160,13 +201,13 @@ def extract_eps_from_pdf(pdf_bytes: bytes) -> Optional[dict]:
         parsed = json.loads(raw)
         normalized = _normalize_extraction_payload(parsed)
         if not normalized:
-            print(f"[Gemini] Unexpected JSON shape: {type(parsed).__name__}")
+            logger.warning("Gemini returned unexpected JSON shape: %s", type(parsed).__name__)
             return None
 
         return normalized
 
     except Exception as e:
-        print(f"[Gemini] Extraction failed: {e}")
+        logger.warning("Gemini extraction failed: %s", e)
         return None
 
 

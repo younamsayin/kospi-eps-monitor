@@ -7,3 +7,4 @@ apscheduler
 pandas
 plotly
 streamlit
+pytest

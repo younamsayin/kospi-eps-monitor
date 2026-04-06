@@ -3,20 +3,23 @@ Scrapes bondweb.co.kr research center for analyst reports.
 Uses the internal AJAX endpoint that the page calls on load.
 """
 
+import os
 import re
 import time
+import logging
 import httpx
 from bs4 import BeautifulSoup
-from datetime import date
+from datetime import date, datetime
 from typing import Optional
 from urllib.parse import quote
 
 BASE_URL = "https://www.bondweb.co.kr/MOA/Board/ResearchCenterV2"
 LIST_URL = f"{BASE_URL}/AjaxPrimeListSub.asp"
 DOWNLOAD_URL = f"{BASE_URL}/DownloadPage.asp"
+DEFAULT_USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+    "User-Agent": os.environ.get("SCRAPER_USER_AGENT", DEFAULT_USER_AGENT),
     "Referer": f"{BASE_URL}/PrimeSub01.asp?SubDiv=Sub110",
     "Content-Type": "application/x-www-form-urlencoded",
 }
@@ -31,6 +34,7 @@ LIST_PARAMS = {
     "lstNumO": "0",
     "ListEOF": "0",
 }
+logger = logging.getLogger(__name__)
 
 
 def fetch_recent_reports(pages: int = 3, ticker_whitelist: Optional[set] = None) -> list:
@@ -126,9 +130,20 @@ def _encode_form_data(data: dict) -> bytes:
 
 
 def _fetch_list_html(client: httpx.Client, data: dict) -> bytes:
-    resp = client.post(LIST_URL, content=_encode_form_data(data))
-    resp.raise_for_status()
-    return resp.content
+    last_exc = None
+    for attempt in range(3):
+        try:
+            resp = client.post(LIST_URL, content=_encode_form_data(data))
+            resp.raise_for_status()
+            return resp.content
+        except httpx.HTTPError as exc:
+            last_exc = exc
+            if attempt == 2:
+                raise
+            delay = 2 ** attempt
+            logger.warning("Bondweb list fetch failed: %s. Retrying in %ss", exc, delay)
+            time.sleep(delay)
+    raise last_exc
 
 
 def _extract_list_cursors(html_bytes: bytes) -> tuple[str, str]:
@@ -247,6 +262,7 @@ def _parse_list(html_bytes: bytes, report_date: date) -> list:
             continue
 
         try:
+            cell_texts = [cell.get_text(" ", strip=True) for cell in cells]
             title = cells[1].get_text(strip=True)
             broker = cells[3].get_text(strip=True)
 
@@ -273,10 +289,11 @@ def _parse_list(html_bytes: bytes, report_date: date) -> list:
                 "source": "bondweb",
                 "title": title,
                 "report_url": report_url,
-                "report_date": report_date,
+                "report_date": _extract_report_date_from_cells(cell_texts, report_date),
                 "report_id": report_id,
             })
-        except Exception:
+        except Exception as exc:
+            logger.warning("Failed to parse Bondweb report row: %s", exc)
             continue
 
     return reports
@@ -331,17 +348,41 @@ def download_pdf(report_url: str, report: Optional[dict] = None) -> Optional[byt
     number, gn = match.group(1), match.group(2)
 
     with httpx.Client(timeout=60, headers=HEADERS) as client:
-        try:
-            resp = client.post(DOWNLOAD_URL, data={"number": number, "gn": gn})
-            resp.raise_for_status()
-        except httpx.HTTPError as exc:
-            label = report.get("title", report_url) if report else report_url
-            print(f"    [!] Bondweb download failed for {label}: {exc}")
-            return None
+        last_exc = None
+        for attempt in range(3):
+            try:
+                resp = client.post(DOWNLOAD_URL, data={"number": number, "gn": gn})
+                resp.raise_for_status()
+                break
+            except httpx.HTTPError as exc:
+                last_exc = exc
+                if attempt == 2:
+                    label = report.get("title", report_url) if report else report_url
+                    logger.warning("Bondweb download failed for %s: %s", label, exc)
+                    return None
+                delay = 2 ** attempt
+                logger.warning("Bondweb PDF download failed: %s. Retrying in %ss", exc, delay)
+                time.sleep(delay)
 
         if len(resp.content) < 1000:  # too small to be a real PDF
             return None
         return resp.content
+
+
+def _extract_report_date_from_cells(cell_texts: list[str], fallback: date) -> date:
+    for text in cell_texts:
+        match = re.search(r"(\d{2,4})[./-](\d{1,2})[./-](\d{1,2})", text or "")
+        if not match:
+            continue
+        year, month, day = match.groups()
+        try:
+            year_int = int(year)
+            if year_int < 100:
+                year_int += 2000
+            return datetime(year_int, int(month), int(day)).date()
+        except ValueError:
+            continue
+    return fallback
 
 
 if __name__ == "__main__":
