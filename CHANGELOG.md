@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.2.0] - 2026-04-06
+
+### Changed
+- Replaced Slack alerts with Telegram bot notifications (`TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID`)
+
 ## [0.1.0] - 2026-04-06
 
 Initial release.

@@ -19,7 +19,7 @@ from db.models import (
 from scraper.krx import fetch_kospi200
 from scraper.naver import fetch_recent_reports, download_pdf
 from extractor.gemini import extract_eps_from_pdf
-from alerts.slack import send_eps_upgrade_alert
+from alerts.telegram import send_eps_upgrade_alert
 
 load_dotenv()
 

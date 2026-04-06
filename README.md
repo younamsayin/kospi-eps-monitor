@@ -19,7 +19,7 @@ Naver Finance → new analyst reports (PDF)
 - Downloads PDFs and extracts EPS estimates using Gemini 2.5 Flash
 - Detects EPS upgrades/downgrades per broker per fiscal year
 - Streamlit dashboard with charts, report links, and revision history
-- Slack alerts on upgrades
+- Telegram alerts on upgrades
 
 ## Setup
 
@@ -38,7 +38,8 @@ Edit `.env`:
 GEMINI_API_KEY=your_gemini_api_key_here
 GEMINI_MODEL=gemini-3.1-flash-lite-preview               # optional, this is the default
 DB_PATH=kospi_eps.db
-SLACK_WEBHOOK_URL=https://hooks.slack.com/services/...   # optional
+TELEGRAM_BOT_TOKEN=your_bot_token_here                   # from @BotFather
+TELEGRAM_CHAT_ID=your_chat_id_here                       # channel or user ID
 EPS_UPGRADE_THRESHOLD=0.02                               # 2% upgrade triggers alert
 CHECK_INTERVAL_MINUTES=60
 ```
@@ -82,7 +83,7 @@ kospi-eps-monitor/
 ├── db/
 │   └── models.py       # SQLite schema and query helpers
 ├── alerts/
-│   └── slack.py        # Slack webhook notifications
+│   └── telegram.py     # Telegram bot notifications
 ├── requirements.txt
 └── .env.example
 ```
