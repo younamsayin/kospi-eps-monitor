@@ -9,6 +9,7 @@ Workflow:
 """
 
 import os
+import re
 import time
 from dotenv import load_dotenv
 
@@ -30,6 +31,10 @@ EPS_CHANGE_THRESHOLD = float(os.environ.get("EPS_CHANGE_THRESHOLD",
                              os.environ.get("EPS_UPGRADE_THRESHOLD", "0.02")))
 TP_CHANGE_THRESHOLD = float(os.environ.get("TP_CHANGE_THRESHOLD", "0.02"))
 SCRAPE_PAGES = int(os.environ.get("SCRAPE_PAGES", "10"))
+REPORTS_DIR = os.environ.get(
+    "REPORTS_DIR",
+    os.path.join(os.path.dirname(__file__), "reports"),
+)
 
 
 def _relative_gap(current: float, previous: float) -> float:
@@ -114,6 +119,33 @@ def _normalize_estimates(conn, report: dict, extracted: dict) -> list[dict]:
     return [deduped[fy] for fy in sorted(deduped)]
 
 
+def _safe_filename_part(value: str, fallback: str) -> str:
+    cleaned = re.sub(r"[^\w\-.]+", "_", (value or "").strip(), flags=re.UNICODE)
+    cleaned = cleaned.strip("._")
+    return cleaned or fallback
+
+
+def _archive_report_pdf(report: dict, pdf_bytes: bytes) -> str:
+    report_date = str(report.get("report_date") or "unknown-date")
+    source = _safe_filename_part(str(report.get("source") or "unknown"), "unknown")
+    ticker = _safe_filename_part(str(report.get("ticker") or "unknown"), "unknown")
+    company = _safe_filename_part(str(report.get("company") or "unknown"), "unknown")
+    broker = _safe_filename_part(str(report.get("broker") or "unknown"), "unknown")
+    title = _safe_filename_part(str(report.get("title") or "report"), "report")
+
+    target_dir = os.path.join(REPORTS_DIR, report_date, source)
+    os.makedirs(target_dir, exist_ok=True)
+
+    filename = f"{ticker}_{company}_{broker}_{title}.pdf"
+    path = os.path.join(target_dir, filename)
+
+    if not os.path.exists(path):
+        with open(path, "wb") as f:
+            f.write(pdf_bytes)
+
+    return path
+
+
 def refresh_kospi200():
     print("[KRX] Fetching KOSPI 200 constituents...")
     constituents = fetch_kospi200()
@@ -141,6 +173,10 @@ def process_report(conn, report: dict, pdf_bytes: bytes, kospi200_tickers: set):
     # Prefer the publication date printed in the PDF when available.
     if extracted.get("report_date"):
         report["report_date"] = extracted["report_date"]
+
+    archived_path = _archive_report_pdf(report, pdf_bytes)
+    report["local_pdf_path"] = archived_path
+    print(f"    Saved PDF: {archived_path}")
 
     # Skip if still no ticker, or not in KOSPI 200
     if not report.get("ticker") or report["ticker"] not in kospi200_tickers:
