@@ -5,7 +5,7 @@ Workflow:
   1. Refresh KOSPI 200 constituent list
   2. Scrape Naver Finance + Bondweb for new analyst reports
   3. Filter to KOSPI 200 tickers / match company names
-  4. For each new report: download PDF → extract EPS via Gemini → detect upgrades → alert
+  4. For each new report: download PDF → extract EPS via Gemini → detect changes → alert
 """
 
 import os
@@ -14,17 +14,20 @@ from dotenv import load_dotenv
 
 from db.models import (
     get_conn, init_db, upsert_kospi200, get_kospi200,
-    report_exists, insert_report, insert_eps, get_previous_eps,
+    report_exists, insert_report, insert_eps,
+    get_previous_eps, get_previous_target_price,
 )
 from scraper.krx import fetch_kospi200
 from scraper.naver import fetch_recent_reports as naver_fetch, download_pdf as naver_download
 from scraper.bondweb import fetch_recent_reports as bondweb_fetch, download_pdf as bondweb_download
 from extractor.gemini import extract_eps_from_pdf
-from alerts.telegram import send_eps_upgrade_alert
+from alerts.telegram import send_eps_change_alert, send_target_price_change_alert
 
 load_dotenv()
 
-EPS_UPGRADE_THRESHOLD = float(os.environ.get("EPS_UPGRADE_THRESHOLD", "0.02"))
+EPS_CHANGE_THRESHOLD = float(os.environ.get("EPS_CHANGE_THRESHOLD",
+                             os.environ.get("EPS_UPGRADE_THRESHOLD", "0.02")))
+TP_CHANGE_THRESHOLD = float(os.environ.get("TP_CHANGE_THRESHOLD", "0.02"))
 
 
 def refresh_kospi200():
@@ -39,7 +42,7 @@ def refresh_kospi200():
 
 
 def process_report(conn, report: dict, pdf_bytes: bytes, kospi200_tickers: set):
-    """Extract EPS from a PDF, save to DB, and alert on upgrades."""
+    """Extract EPS from a PDF, save to DB, and alert on changes."""
 
     extracted = extract_eps_from_pdf(pdf_bytes)
     if not extracted:
@@ -55,6 +58,24 @@ def process_report(conn, report: dict, pdf_bytes: bytes, kospi200_tickers: set):
     if not report.get("ticker") or report["ticker"] not in kospi200_tickers:
         return
 
+    # --- Target price change detection (once per report, before inserting estimates) ---
+    new_tp = extracted.get("target_price")
+    if new_tp:
+        prev_tp = get_previous_target_price(conn, report["ticker"], report["broker"])
+        if prev_tp and abs(new_tp - prev_tp) / abs(prev_tp) > TP_CHANGE_THRESHOLD:
+            direction = "RAISED" if new_tp > prev_tp else "CUT"
+            print(f"    [TP {direction}] {report['ticker']}: {prev_tp:,.0f} → {new_tp:,.0f}")
+            send_target_price_change_alert(
+                ticker=report["ticker"],
+                company=report["company"],
+                broker=report["broker"],
+                prev_tp=prev_tp,
+                new_tp=new_tp,
+                recommendation=extracted.get("recommendation"),
+                report_url=report["report_url"],
+            )
+
+    # --- Insert report and estimates ---
     report_id = insert_report(conn, report)
     conn.commit()
 
@@ -73,21 +94,23 @@ def process_report(conn, report: dict, pdf_bytes: bytes, kospi200_tickers: set):
             "broker": report["broker"],
             "fiscal_year": fiscal_year,
             "fwd_eps": new_eps,
-            "target_price": extracted.get("target_price"),
+            "target_price": new_tp,
             "recommendation": extracted.get("recommendation"),
         })
         conn.commit()
 
-        if prev_eps and new_eps > prev_eps * (1 + EPS_UPGRADE_THRESHOLD):
-            print(f"    [UPGRADE] {report['ticker']} {fiscal_year}E: {prev_eps:,.0f} → {new_eps:,.0f}")
-            send_eps_upgrade_alert(
+        # Alert if EPS changed beyond threshold (upgrade OR downgrade)
+        if prev_eps and abs(new_eps - prev_eps) / abs(prev_eps) > EPS_CHANGE_THRESHOLD:
+            direction = "UPGRADE" if new_eps > prev_eps else "DOWNGRADE"
+            print(f"    [{direction}] {report['ticker']} {fiscal_year}E: {prev_eps:,.0f} → {new_eps:,.0f}")
+            send_eps_change_alert(
                 ticker=report["ticker"],
                 company=report["company"],
                 broker=report["broker"],
                 fiscal_year=fiscal_year,
                 prev_eps=prev_eps,
                 new_eps=new_eps,
-                target_price=extracted.get("target_price"),
+                target_price=new_tp,
                 recommendation=extracted.get("recommendation"),
                 report_url=report["report_url"],
             )
@@ -126,7 +149,7 @@ def run_once():
         naver_reports = naver_fetch(pages=3, ticker_whitelist=kospi200_tickers)
         run_source(conn, "Naver", naver_reports, naver_download, kospi200_tickers)
 
-        # Bondweb — Gemini extracts ticker; we filter after extraction
+        # Bondweb — pre-filtered by company name match; remaining get Gemini extraction
         bondweb_reports = bondweb_fetch(pages=3, ticker_whitelist=kospi200_name_map)
         run_source(conn, "Bondweb", bondweb_reports, bondweb_download, kospi200_tickers)
 

@@ -111,3 +111,16 @@ def get_previous_eps(conn, ticker: str, fiscal_year: int, broker: str) -> Option
         (ticker, fiscal_year, broker),
     ).fetchone()
     return float(row["fwd_eps"]) if row else None
+
+
+def get_previous_target_price(conn, ticker: str, broker: str) -> Optional[float]:
+    row = conn.execute(
+        """
+        SELECT target_price FROM eps_estimates
+        WHERE ticker = ? AND broker = ? AND target_price IS NOT NULL
+        ORDER BY extracted_at DESC
+        LIMIT 1
+        """,
+        (ticker, broker),
+    ).fetchone()
+    return float(row["target_price"]) if row else None

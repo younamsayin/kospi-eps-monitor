@@ -112,7 +112,8 @@ def _parse_list(html_bytes: bytes, report_date: date) -> list:
 def _filter_by_whitelist(reports: list, ticker_whitelist: set) -> list:
     """
     Filters reports whose title mentions a KOSPI 200 company name.
-    ticker_whitelist should be a dict of {ticker: company_name} for name matching.
+    ticker_whitelist is a dict of {company_name: ticker} for name matching.
+    Reports with no name match are DROPPED to avoid wasting Gemini API calls.
     """
     if not ticker_whitelist or not isinstance(ticker_whitelist, dict):
         return reports
@@ -120,15 +121,13 @@ def _filter_by_whitelist(reports: list, ticker_whitelist: set) -> list:
     matched = []
     for report in reports:
         title = report["title"]
-        for ticker, company in ticker_whitelist.items():
+        for company, ticker in ticker_whitelist.items():
             if company in title:
                 report["ticker"] = ticker
                 report["company"] = company
                 matched.append(report)
                 break
-        else:
-            # No name match — include anyway and let Gemini sort it out
-            matched.append(report)
+        # No match → skip (don't waste a Gemini call on macro/bond reports)
 
     return matched
 
