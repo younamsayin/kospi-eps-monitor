@@ -19,6 +19,8 @@
 - Improved Bondweb filtering by fixing row parsing, stripping leading bylines, and using safer normalized company matching
 - Improved Naver report downloading by resolving PDF links from report detail pages and trying external broker page fallbacks when direct links are unavailable
 - Added Bondweb company-search mode with per-company result caps, deduping, and console progress logging
+- Updated the Index Aggregate chart to plot weekly average aggregate EPS levels instead of daily totals or percentage changes
+- Hardened Bondweb PDF downloads so broker-side HTTP errors are logged and skipped instead of crashing the monitor
 
 ## [0.1.0] - 2026-04-06
 

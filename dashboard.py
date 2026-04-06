@@ -294,8 +294,8 @@ with tab1:
 # ── Tab 2: Index Aggregate ───────────────────────────────────────────────────
 
 with tab2:
-    st.subheader("KOSPI 200 — Aggregate FWD EPS Trend")
-    st.caption("Sum of latest consensus EPS across all tracked companies, by extraction date.")
+    st.subheader("KOSPI 200 — Weekly Average FWD EPS")
+    st.caption("Weekly average of the aggregate latest consensus EPS across tracked companies.")
 
     # Current year and next year side by side
     this_year = selected_year
@@ -336,25 +336,38 @@ with tab2:
     if agg_df.empty:
         st.info("Not enough data for aggregate trend yet. Run the monitor for a few days.")
     else:
+        agg_df["extract_date"] = pd.to_datetime(agg_df["extract_date"])
+        agg_df["week_start"] = agg_df["extract_date"].dt.to_period("W").apply(lambda p: p.start_time)
+        weekly_agg_df = (
+            agg_df.groupby(["week_start", "fiscal_year"], as_index=False)
+            .agg(
+                avg_total_eps=("total_eps", "mean"),
+                avg_company_count=("company_count", "mean"),
+            )
+            .sort_values(["fiscal_year", "week_start"])
+        )
         fig = go.Figure()
-        for year in sorted(agg_df["fiscal_year"].unique()):
-            yr_df = agg_df[agg_df["fiscal_year"] == year]
+        for year in sorted(weekly_agg_df["fiscal_year"].unique()):
+            yr_df = weekly_agg_df[weekly_agg_df["fiscal_year"] == year]
             fig.add_trace(go.Scatter(
-                x=yr_df["extract_date"],
-                y=yr_df["total_eps"],
+                x=yr_df["week_start"],
+                y=yr_df["avg_total_eps"],
                 mode="lines+markers",
                 name=f"{year}E",
-                hovertemplate="%{x}<br>Total EPS: %{y:,.0f}<br>Companies: %{customdata}<extra></extra>",
-                customdata=yr_df["company_count"],
+                hovertemplate="%{x}<br>Weekly Avg EPS: %{y:,.0f}<br>Avg Companies: %{customdata:.1f}<extra></extra>",
+                customdata=yr_df["avg_company_count"],
             ))
-        fig.update_layout(
-            xaxis_title="Date",
-            yaxis_title="Sum of FWD EPS (KRW/share)",
-            height=400,
-            plot_bgcolor="rgba(0,0,0,0)",
-            paper_bgcolor="rgba(0,0,0,0)",
-        )
-        st.plotly_chart(fig, use_container_width=True)
+        if weekly_agg_df.empty:
+            st.info("Not enough history yet for a weekly aggregate chart.")
+        else:
+            fig.update_layout(
+                xaxis_title="Week",
+                yaxis_title="Weekly Avg Aggregate EPS (KRW/share)",
+                height=400,
+                plot_bgcolor="rgba(0,0,0,0)",
+                paper_bgcolor="rgba(0,0,0,0)",
+            )
+            st.plotly_chart(fig, use_container_width=True)
 
         # Snapshot table: current totals
         st.subheader("Current Snapshot")

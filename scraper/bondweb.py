@@ -294,7 +294,7 @@ def _filter_by_whitelist(reports: list, ticker_whitelist: set) -> list:
     return matched
 
 
-def download_pdf(report_url: str) -> Optional[bytes]:
+def download_pdf(report_url: str, report: Optional[dict] = None) -> Optional[bytes]:
     """Downloads a PDF from bondweb using its download URL."""
     # report_url is like: .../DownloadPage.asp?number=894115&gn=1
     # Convert to a POST request
@@ -305,8 +305,14 @@ def download_pdf(report_url: str) -> Optional[bytes]:
     number, gn = match.group(1), match.group(2)
 
     with httpx.Client(timeout=60, headers=HEADERS) as client:
-        resp = client.post(DOWNLOAD_URL, data={"number": number, "gn": gn})
-        resp.raise_for_status()
+        try:
+            resp = client.post(DOWNLOAD_URL, data={"number": number, "gn": gn})
+            resp.raise_for_status()
+        except httpx.HTTPError as exc:
+            label = report.get("title", report_url) if report else report_url
+            print(f"    [!] Bondweb download failed for {label}: {exc}")
+            return None
+
         if len(resp.content) < 1000:  # too small to be a real PDF
             return None
         return resp.content
