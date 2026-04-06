@@ -3,8 +3,8 @@ Main monitoring loop.
 
 Workflow:
   1. Refresh KOSPI 200 constituent list
-  2. Scrape Naver Finance for new analyst reports
-  3. Filter to KOSPI 200 tickers only
+  2. Scrape Naver Finance + Bondweb for new analyst reports
+  3. Filter to KOSPI 200 tickers / match company names
   4. For each new report: download PDF → extract EPS via Gemini → detect upgrades → alert
 """
 
@@ -17,7 +17,8 @@ from db.models import (
     report_exists, insert_report, insert_eps, get_previous_eps,
 )
 from scraper.krx import fetch_kospi200
-from scraper.naver import fetch_recent_reports, download_pdf
+from scraper.naver import fetch_recent_reports as naver_fetch, download_pdf as naver_download
+from scraper.bondweb import fetch_recent_reports as bondweb_fetch, download_pdf as bondweb_download
 from extractor.gemini import extract_eps_from_pdf
 from alerts.telegram import send_eps_upgrade_alert
 
@@ -37,71 +38,77 @@ def refresh_kospi200():
     return constituents
 
 
-def process_reports(conn, kospi200_tickers: set[str]):
-    print("[Naver] Fetching recent analyst reports...")
-    reports = fetch_recent_reports(pages=3, ticker_whitelist=kospi200_tickers)
-    print(f"[Naver] Found {len(reports)} KOSPI 200 reports.")
+def process_report(conn, report: dict, pdf_bytes: bytes, kospi200_tickers: set):
+    """Extract EPS from a PDF, save to DB, and alert on upgrades."""
+
+    extracted = extract_eps_from_pdf(pdf_bytes)
+    if not extracted:
+        print(f"    [!] Gemini extraction failed, skipping.")
+        return
+
+    # For bondweb reports, ticker/company come from Gemini extraction
+    if not report.get("ticker") and extracted.get("ticker"):
+        report["ticker"] = extracted["ticker"]
+        report["company"] = extracted.get("company", "")
+
+    # Skip if still no ticker, or not in KOSPI 200
+    if not report.get("ticker") or report["ticker"] not in kospi200_tickers:
+        return
+
+    report_id = insert_report(conn, report)
+    conn.commit()
+
+    for est in extracted.get("estimates", []):
+        fiscal_year = est.get("fiscal_year")
+        new_eps = est.get("fwd_eps")
+
+        if not fiscal_year or new_eps is None:
+            continue
+
+        prev_eps = get_previous_eps(conn, report["ticker"], fiscal_year, report["broker"])
+
+        insert_eps(conn, {
+            "report_id": report_id,
+            "ticker": report["ticker"],
+            "broker": report["broker"],
+            "fiscal_year": fiscal_year,
+            "fwd_eps": new_eps,
+            "target_price": extracted.get("target_price"),
+            "recommendation": extracted.get("recommendation"),
+        })
+        conn.commit()
+
+        if prev_eps and new_eps > prev_eps * (1 + EPS_UPGRADE_THRESHOLD):
+            print(f"    [UPGRADE] {report['ticker']} {fiscal_year}E: {prev_eps:,.0f} → {new_eps:,.0f}")
+            send_eps_upgrade_alert(
+                ticker=report["ticker"],
+                company=report["company"],
+                broker=report["broker"],
+                fiscal_year=fiscal_year,
+                prev_eps=prev_eps,
+                new_eps=new_eps,
+                target_price=extracted.get("target_price"),
+                recommendation=extracted.get("recommendation"),
+                report_url=report["report_url"],
+            )
+
+
+def run_source(conn, source_name: str, reports: list, download_fn, kospi200_tickers: set):
+    print(f"[{source_name}] Found {len(reports)} reports.")
 
     for report in reports:
         if report_exists(conn, report["report_url"]):
-            continue  # already processed
+            continue
 
-        print(f"  Processing: {report['company']} ({report['ticker']}) — {report['broker']}")
+        label = f"{report['company']} ({report['ticker']})" if report.get("ticker") else report["title"][:40]
+        print(f"  Processing: {label} — {report['broker']}")
 
-        # Download PDF
-        pdf_bytes = download_pdf(report["report_url"])
+        pdf_bytes = download_fn(report["report_url"])
         if not pdf_bytes:
             print(f"    [!] Could not download PDF, skipping.")
             continue
 
-        # Extract via Gemini
-        extracted = extract_eps_from_pdf(pdf_bytes)
-        if not extracted:
-            print(f"    [!] Gemini extraction failed, skipping.")
-            continue
-
-        # Insert report record
-        report_id = insert_report(conn, report)
-        conn.commit()
-
-        # Process each year's estimate
-        for est in extracted.get("estimates", []):
-            fiscal_year = est.get("fiscal_year")
-            new_eps = est.get("fwd_eps")
-
-            if not fiscal_year or new_eps is None:
-                continue
-
-            # Check for upgrade
-            prev_eps = get_previous_eps(conn, report["ticker"], fiscal_year, report["broker"])
-
-            estimate_row = {
-                "report_id": report_id,
-                "ticker": report["ticker"],
-                "broker": report["broker"],
-                "fiscal_year": fiscal_year,
-                "fwd_eps": new_eps,
-                "target_price": extracted.get("target_price"),
-                "recommendation": extracted.get("recommendation"),
-            }
-            insert_eps(conn, estimate_row)
-            conn.commit()
-
-            # Alert if upgrade exceeds threshold
-            if prev_eps and new_eps > prev_eps * (1 + EPS_UPGRADE_THRESHOLD):
-                print(f"    [UPGRADE] {report['ticker']} {fiscal_year}E: {prev_eps:,.0f} → {new_eps:,.0f}")
-                send_eps_upgrade_alert(
-                    ticker=report["ticker"],
-                    company=report["company"],
-                    broker=report["broker"],
-                    fiscal_year=fiscal_year,
-                    prev_eps=prev_eps,
-                    new_eps=new_eps,
-                    target_price=extracted.get("target_price"),
-                    recommendation=extracted.get("recommendation"),
-                    report_url=report["report_url"],
-                )
-
+        process_report(conn, report, pdf_bytes, kospi200_tickers)
         time.sleep(1)  # be polite to Gemini API
 
 
@@ -112,12 +119,22 @@ def run_once():
         kospi200_tickers = {c["ticker"] for c in constituents} if constituents else {
             r["ticker"] for r in get_kospi200(conn)
         }
-        process_reports(conn, kospi200_tickers)
+        # Build name→ticker map for bondweb company name matching
+        kospi200_name_map = {c["company"]: c["ticker"] for c in constituents} if constituents else {}
+
+        # Naver Finance — pre-filtered to KOSPI 200 tickers
+        naver_reports = naver_fetch(pages=3, ticker_whitelist=kospi200_tickers)
+        run_source(conn, "Naver", naver_reports, naver_download, kospi200_tickers)
+
+        # Bondweb — Gemini extracts ticker; we filter after extraction
+        bondweb_reports = bondweb_fetch(pages=3, ticker_whitelist=kospi200_name_map)
+        run_source(conn, "Bondweb", bondweb_reports, bondweb_download, kospi200_tickers)
+
     finally:
         conn.close()
 
 
-def run_scheduled(interval_minutes: int = 60):
+def run_scheduled(interval_minutes: int = 1440):
     from apscheduler.schedulers.blocking import BlockingScheduler
 
     scheduler = BlockingScheduler()
