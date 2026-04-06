@@ -4,10 +4,12 @@ Uses the internal AJAX endpoint that the page calls on load.
 """
 
 import re
+import time
 import httpx
 from bs4 import BeautifulSoup
 from datetime import date
 from typing import Optional
+from urllib.parse import quote
 
 BASE_URL = "https://www.bondweb.co.kr/MOA/Board/ResearchCenterV2"
 LIST_URL = f"{BASE_URL}/AjaxPrimeListSub.asp"
@@ -42,26 +44,20 @@ def fetch_recent_reports(pages: int = 3, ticker_whitelist: Optional[set] = None)
     Returns:
         List of report dicts: {ticker, company, broker, title, report_url, report_date, report_id}
     """
+    if ticker_whitelist is not None and isinstance(ticker_whitelist, dict):
+        return _search_reports_by_companies(ticker_whitelist, pages=pages)
+
     reports = []
     today = date.today()
 
     with httpx.Client(timeout=30, headers=HEADERS) as client:
-        for page in range(1, pages + 1):
-            params = {**LIST_PARAMS, "PageNo": str(page)}
-            resp = client.post(LIST_URL, data=params)
-            resp.raise_for_status()
-
-            page_reports = _parse_list(resp.content, today)
+        for _ in range(max(1, pages)):
+            page_html = _fetch_list_html(client, LIST_PARAMS)
+            page_reports = _parse_list(page_html, today)
             reports.extend(page_reports)
+            break
 
-            if not page_reports:
-                break
-
-    # If whitelist provided, filter by matching company names
-    if ticker_whitelist is not None:
-        reports = _filter_by_whitelist(reports, ticker_whitelist)
-
-    return reports
+    return _dedupe_reports(reports)
 
 
 def _normalize_text(text: str) -> str:
@@ -80,6 +76,139 @@ def _strip_leading_byline(title: str) -> str:
             break
         stripped = stripped[end + 1 :].strip()
     return stripped
+
+
+def _dedupe_reports(reports: list) -> list:
+    deduped = []
+    seen_urls = set()
+    for report in reports:
+        if report["report_url"] in seen_urls:
+            continue
+        seen_urls.add(report["report_url"])
+        deduped.append(report)
+    return deduped
+
+
+def _encode_form_data(data: dict) -> bytes:
+    body = "&".join(
+        f"{key}={quote(str(value), encoding='euc-kr', safe='')}"
+        for key, value in data.items()
+    )
+    return body.encode("ascii")
+
+
+def _fetch_list_html(client: httpx.Client, data: dict) -> bytes:
+    resp = client.post(LIST_URL, content=_encode_form_data(data))
+    resp.raise_for_status()
+    return resp.content
+
+
+def _extract_list_cursors(html_bytes: bytes) -> tuple[str, str]:
+    soup = BeautifulSoup(html_bytes.decode("euc-kr", errors="replace"), "lxml")
+    values = [tag.get("value", "") for tag in soup.select('input[name="nTr"]')]
+    if not values:
+        return "0", "0"
+    return values[0], values[-1]
+
+
+def _title_likely_about_company(title: str, company: str) -> bool:
+    stripped = _strip_leading_byline(title)
+    normalized_title = _normalize_text(stripped)
+    normalized_company = _normalize_text(company)
+    if not normalized_title or not normalized_company:
+        return False
+    if normalized_company not in normalized_title:
+        return False
+
+    # Prefer titles that lead with the company name or clearly frame it as
+    # the covered stock rather than just mentioning it in passing.
+    title_no_space = re.sub(r"\s+", "", stripped)
+    return (
+        title_no_space.startswith(company)
+        or f"({company}" in stripped
+        or f"[{company}" in stripped
+        or f"{company}(" in stripped
+        or f"{company}/" in stripped
+        or f"{company} -" in stripped
+        or f"{company}:" in stripped
+    )
+
+
+def _search_reports_by_companies(
+    company_map: dict[str, str],
+    pages: int = 1,
+    per_company_limit: int = 5,
+) -> list:
+    reports = []
+    today = date.today()
+    total_companies = len(company_map)
+
+    with httpx.Client(timeout=30, headers=HEADERS) as client:
+        for idx, (company, ticker) in enumerate(company_map.items(), start=1):
+            print(
+                f"[Bondweb] Searching {company} ({ticker}) "
+                f"[{idx}/{total_companies}]"
+            )
+            company_reports = []
+            params = {
+                **LIST_PARAMS,
+                "srhItem": "nIdSjt",
+                "srhWord": company,
+                "srhDate": "",
+                "BoardLink": "",
+                "HcCnt": "",
+                "DATA_CYCLE": "",
+                "tTime": str(int(time.time() * 1000)),
+                "actNum": "0",
+                "lstNumN": "0",
+                "lstNumO": "0",
+            }
+
+            for page_idx in range(max(1, pages)):
+                html_bytes = _fetch_list_html(client, params)
+                page_reports = _parse_list(html_bytes, today)
+                print(
+                    f"    page {page_idx + 1}: {len(page_reports)} raw hits"
+                )
+
+                matched_any = False
+                for report in page_reports:
+                    if _title_likely_about_company(report["title"], company):
+                        report["ticker"] = ticker
+                        report["company"] = company
+                        company_reports.append(report)
+                        matched_any = True
+
+                company_reports = _dedupe_reports(company_reports)
+                print(
+                    f"    matched so far: {len(company_reports)} "
+                    f"(limit {per_company_limit})"
+                )
+                if len(company_reports) >= per_company_limit:
+                    company_reports = company_reports[:per_company_limit]
+                    break
+
+                if page_idx == pages - 1:
+                    break
+
+                lst_num_n, lst_num_o = _extract_list_cursors(html_bytes)
+                if lst_num_o in ("", "0") or lst_num_o == params["lstNumO"]:
+                    break
+
+                params["actNum"] = "2"
+                params["lstNumN"] = lst_num_n
+                params["lstNumO"] = lst_num_o
+
+                if not matched_any and not page_reports:
+                    break
+
+            print(
+                f"[Bondweb] Collected {len(company_reports[:per_company_limit])} "
+                f"report(s) for {company}"
+            )
+            reports.extend(company_reports[:per_company_limit])
+
+    return _dedupe_reports(reports)
 
 
 def _parse_list(html_bytes: bytes, report_date: date) -> list:
