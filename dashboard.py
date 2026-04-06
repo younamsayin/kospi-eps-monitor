@@ -100,6 +100,10 @@ def toggle_favorite_company(company_label: str):
         conn.commit()
 
 
+def select_company(company_label: str):
+    st.session_state["selected_company"] = company_label
+
+
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 
 with st.sidebar:
@@ -148,14 +152,21 @@ with st.sidebar:
         fav_cols = st.columns(2)
         for idx, label in enumerate(favorite_labels):
             with fav_cols[idx % 2]:
-                if st.button(label, key=f"favorite_{label}", use_container_width=True):
-                    st.session_state["selected_company"] = label
-                    st.rerun()
+                st.button(
+                    label,
+                    key=f"favorite_{label}",
+                    use_container_width=True,
+                    on_click=select_company,
+                    args=(label,),
+                )
 
     if selected_company != "All":
-        if st.button("← All Companies", use_container_width=True):
-            st.session_state["selected_company"] = "All"
-            st.rerun()
+        st.button(
+            "← All Companies",
+            use_container_width=True,
+            on_click=select_company,
+            args=("All",),
+        )
 
     years_df = q("SELECT DISTINCT fiscal_year FROM eps_estimates ORDER BY fiscal_year")
     available_years = years_df["fiscal_year"].tolist()
