@@ -40,6 +40,7 @@ REPORTS_DIR = os.environ.get(
     os.path.join(os.path.dirname(__file__), "reports"),
 )
 logger = logging.getLogger(__name__)
+SKIP_PROGRESS_INTERVAL = max(1, int(os.environ.get("SKIP_PROGRESS_INTERVAL", "25")))
 
 
 def _relative_gap(current: float, previous: float) -> float:
@@ -160,6 +161,31 @@ def _format_eta(seconds_remaining: float) -> str:
     if minutes:
         return f"{minutes}m {seconds}s"
     return f"{seconds}s"
+
+
+def _log_progress(
+    source_name: str,
+    idx: int,
+    total_reports: int,
+    processed: int,
+    skipped_existing: int,
+    skipped_download: int,
+    skipped_duplicate_pdf: int,
+    eta: str,
+    message: str,
+):
+    logger.info(
+        "[%s] [%s/%s] %s | processed=%s existing=%s download_fail=%s dup_pdf=%s ETA=%s",
+        source_name,
+        idx,
+        total_reports,
+        message,
+        processed,
+        skipped_existing,
+        skipped_download,
+        skipped_duplicate_pdf,
+        eta,
+    )
 
 
 def _apply_extracted_metadata(report: dict, extracted: dict):
@@ -304,32 +330,35 @@ def run_source(conn, source_name: str, reports: list, download_fn, kospi200_tick
 
         if report_exists(conn, report["report_url"]):
             skipped_existing += 1
-            logger.info(
-                "[%s] [%s/%s] Already saved, skipping. Progress: processed=%s existing=%s download_fail=%s dup_pdf=%s ETA=%s",
-                source_name,
-                idx,
-                total_reports,
-                processed,
-                skipped_existing,
-                skipped_download,
-                skipped_duplicate_pdf,
-                eta,
-            )
+            if (
+                skipped_existing == 1
+                or skipped_existing % SKIP_PROGRESS_INTERVAL == 0
+                or idx == total_reports
+            ):
+                _log_progress(
+                    source_name,
+                    idx,
+                    total_reports,
+                    processed,
+                    skipped_existing,
+                    skipped_download,
+                    skipped_duplicate_pdf,
+                    eta,
+                    "Already saved, skipping",
+                )
             continue
 
         label = f"{report['company']} ({report['ticker']})" if report.get("ticker") else report["title"][:40]
-        logger.info(
-            "[%s] [%s/%s] Processing: %s — %s | processed=%s existing=%s download_fail=%s dup_pdf=%s ETA=%s",
+        _log_progress(
             source_name,
             idx,
             total_reports,
-            label,
-            report["broker"],
             processed,
             skipped_existing,
             skipped_download,
             skipped_duplicate_pdf,
             eta,
+            f"Processing: {label} — {report['broker']}",
         )
 
         try:
@@ -404,6 +433,10 @@ if __name__ == "__main__":
         level=os.environ.get("LOG_LEVEL", "INFO").upper(),
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+    logging.getLogger("google_genai.models").setLevel(logging.WARNING)
+    logging.getLogger("google_genai.types").setLevel(logging.ERROR)
 
     init_db()
 
