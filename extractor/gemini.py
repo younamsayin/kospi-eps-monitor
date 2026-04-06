@@ -13,7 +13,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-MODEL = "gemini-2.5-flash"
+MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.1-flash-lite-preview")
 
 EXTRACTION_PROMPT = """
 You are a financial analyst assistant. This is a Korean stock analyst report (증권사 리포트).

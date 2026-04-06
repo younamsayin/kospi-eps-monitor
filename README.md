@@ -36,6 +36,7 @@ cp .env.example .env
 Edit `.env`:
 ```
 GEMINI_API_KEY=your_gemini_api_key_here
+GEMINI_MODEL=gemini-3.1-flash-lite-preview               # optional, this is the default
 DB_PATH=kospi_eps.db
 SLACK_WEBHOOK_URL=https://hooks.slack.com/services/...   # optional
 EPS_UPGRADE_THRESHOLD=0.02                               # 2% upgrade triggers alert
