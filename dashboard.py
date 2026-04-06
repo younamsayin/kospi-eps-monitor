@@ -157,7 +157,7 @@ tab1, tab2, tab3, tab4 = st.tabs([
 
 with tab1:
     ticker_filter = "AND e.ticker = ?" if selected_ticker else ""
-    params = (selected_ticker,) if selected_ticker else ()
+    params = (selected_ticker, selected_ticker) if selected_ticker else ()
 
     consensus_df = q(f"""
         WITH latest_per_broker AS (

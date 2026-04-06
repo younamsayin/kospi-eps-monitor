@@ -13,6 +13,7 @@
 - Added previous/current report dates to revision displays and Telegram revision alerts
 - Fixed revision ordering to compare older report dates to newer report dates consistently
 - Hardened Gemini extraction parsing so unexpected JSON list responses are normalized instead of crashing the monitor
+- Fixed the company-filtered consensus dashboard query to bind the selected ticker correctly
 
 ## [0.1.0] - 2026-04-06
 
