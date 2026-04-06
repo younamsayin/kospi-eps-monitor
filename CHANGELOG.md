@@ -15,6 +15,9 @@
 - Hardened Gemini extraction parsing so unexpected JSON list responses are normalized instead of crashing the monitor
 - Fixed the company-filtered consensus dashboard query to bind the selected ticker correctly
 - Updated report ingestion to prefer the publication date extracted from PDFs and sort recent reports newest-to-oldest by report date
+- Added a `Source` column to recent reports, persisted report source metadata, and backfilled existing rows from stored URLs
+- Improved Bondweb filtering by fixing row parsing, stripping leading bylines, and using safer normalized company matching
+- Improved Naver report downloading by resolving PDF links from report detail pages and trying external broker page fallbacks when direct links are unavailable
 
 ## [0.1.0] - 2026-04-06
 

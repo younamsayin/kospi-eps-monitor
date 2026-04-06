@@ -64,13 +64,31 @@ def fetch_recent_reports(pages: int = 3, ticker_whitelist: Optional[set] = None)
     return reports
 
 
+def _normalize_text(text: str) -> str:
+    return re.sub(r"[\s\W_]+", "", text or "").lower()
+
+
+def _strip_leading_byline(title: str) -> str:
+    """
+    Bondweb titles often start with an analyst/broker byline in parentheses,
+    e.g. "(미래에셋증권 홍길동) ..." which should not be used for company matching.
+    """
+    stripped = (title or "").strip()
+    while stripped.startswith("("):
+        end = stripped.find(")")
+        if end == -1:
+            break
+        stripped = stripped[end + 1 :].strip()
+    return stripped
+
+
 def _parse_list(html_bytes: bytes, report_date: date) -> list:
     soup = BeautifulSoup(html_bytes.decode("euc-kr", errors="replace"), "lxml")
     reports = []
 
     for row in soup.select("tr"):
         cells = row.select("td")
-        if len(cells) < 4:
+        if len(cells) < 5:
             continue
 
         try:
@@ -97,11 +115,11 @@ def _parse_list(html_bytes: bytes, report_date: date) -> list:
                 "ticker": "",        # unknown until Gemini extracts it
                 "company": "",       # unknown until Gemini extracts it
                 "broker": broker,
+                "source": "bondweb",
                 "title": title,
                 "report_url": report_url,
                 "report_date": report_date,
                 "report_id": report_id,
-                "_source": "bondweb",
             })
         except Exception:
             continue
@@ -118,11 +136,26 @@ def _filter_by_whitelist(reports: list, ticker_whitelist: set) -> list:
     if not ticker_whitelist or not isinstance(ticker_whitelist, dict):
         return reports
 
+    company_items = [
+        (company, ticker, _normalize_text(company))
+        for company, ticker in ticker_whitelist.items()
+    ]
+    # Prefer longer company names first so broad substrings do not steal matches.
+    company_items.sort(key=lambda item: len(item[2]), reverse=True)
+
     matched = []
     for report in reports:
         title = report["title"]
-        for company, ticker in ticker_whitelist.items():
-            if company in title:
+        broker = report.get("broker", "")
+        normalized_title = _normalize_text(_strip_leading_byline(title))
+        normalized_broker = _normalize_text(broker)
+
+        for company, ticker, normalized_company in company_items:
+            if not normalized_company:
+                continue
+            if normalized_company == normalized_broker:
+                continue
+            if normalized_company in normalized_title:
                 report["ticker"] = ticker
                 report["company"] = company
                 matched.append(report)

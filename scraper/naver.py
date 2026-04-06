@@ -4,12 +4,16 @@ URL: https://finance.naver.com/research/company_list.naver
 """
 
 import httpx
+import json
+import re
 from bs4 import BeautifulSoup
 from datetime import date, datetime
 from typing import Optional
+from urllib.parse import urljoin, urlparse
 
 
 NAVER_RESEARCH_URL = "https://finance.naver.com/research/company_list.naver"
+NAVER_RESEARCH_BASE_URL = "https://finance.naver.com/research/"
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
@@ -80,27 +84,31 @@ def _parse_report_list(html: str) -> list:
                 continue
             title = title_tag.get_text(strip=True)
 
-            # cell[3] has the direct PDF link
+            report_page_url = urljoin(NAVER_RESEARCH_BASE_URL, title_tag.get("href", ""))
+
+            # cell[3] usually has the direct PDF link
             pdf_tag = cells[3].select_one("a[href]")
             pdf_url = pdf_tag["href"] if pdf_tag else None
 
-            # Fallback: use the report page URL from title link
-            if not pdf_url:
-                href = title_tag.get("href", "")
-                pdf_url = "https://finance.naver.com/research/" + href if href else None
+            # Keep the report page URL too so download_pdf can resolve cases
+            # where Naver no longer exposes a direct PDF link in the list row.
+            if pdf_url:
+                pdf_url = urljoin(NAVER_RESEARCH_BASE_URL, pdf_url)
 
             broker = cells[2].get_text(strip=True)
             date_str = cells[4].get_text(strip=True)
             report_date = _parse_date(date_str)
 
-            if ticker and pdf_url:
+            if ticker:
                 reports.append(
                     {
                         "ticker": ticker,
                         "company": company,
                         "broker": broker,
+                        "source": "naver",
                         "title": title,
-                        "report_url": pdf_url,   # direct PDF URL
+                        "report_url": pdf_url or report_page_url,
+                        "report_page_url": report_page_url,
                         "report_date": report_date,
                     }
                 )
@@ -119,10 +127,156 @@ def _parse_date(date_str: str) -> Optional[date]:
     return None
 
 
-def download_pdf(pdf_url: str) -> Optional[bytes]:
-    """Downloads a PDF directly from its URL (as found in Naver's table cell[3])."""
+def _extract_pdf_url_from_report_page(html: str, page_url: str) -> Optional[str]:
+    soup = BeautifulSoup(html, "lxml")
+
+    # Some detail pages still embed a direct PDF link.
+    for a in soup.select("a[href]"):
+        href = (a.get("href") or "").strip()
+        if not href:
+            continue
+        full_url = urljoin(page_url, href)
+        if ".pdf" in full_url.lower() or "stock.pstatic.net" in full_url.lower():
+            return full_url
+
+    # Fallback: look for PDF-like URLs inside scripts or inline HTML.
+    match = re.search(r'https?://[^"\']+\.pdf', html, re.IGNORECASE)
+    if match:
+        return match.group(0)
+
+    return None
+
+
+def _extract_external_report_url_from_page(html: str, page_url: str) -> Optional[str]:
+    soup = BeautifulSoup(html, "lxml")
+    for a in soup.select("a[href]"):
+        href = (a.get("href") or "").strip()
+        if not href:
+            continue
+        full_url = urljoin(page_url, href)
+        parsed = urlparse(full_url)
+        if parsed.netloc and "finance.naver.com" not in parsed.netloc:
+            return full_url
+    return None
+
+
+def _find_pdf_like_link_in_html(html: str, page_url: str) -> Optional[str]:
+    soup = BeautifulSoup(html, "lxml")
+    for a in soup.select("a[href]"):
+        href = (a.get("href") or "").strip()
+        if not href:
+            continue
+        full_url = urljoin(page_url, href)
+        lower_url = full_url.lower()
+        label = a.get_text(" ", strip=True).lower()
+        if ".pdf" in lower_url:
+            return full_url
+        if any(token in lower_url for token in ["download", "file", "attachment", "attach"]):
+            return full_url
+        if any(token in label for token in ["pdf", "다운로드", "첨부", "원문"]):
+            return full_url
+
+    match = re.search(r'https?://[^"\']+\.pdf', html, re.IGNORECASE)
+    if match:
+        return match.group(0)
+    return None
+
+
+def _resolve_shinhan_pdf_url(client: httpx.Client, external_url: str, report: Optional[dict]) -> Optional[str]:
+    """
+    Best-effort Shinhan resolver.
+    Some Naver detail pages only link to Shinhan's research popup. We try the
+    open search endpoint first and build a direct candidate from the returned
+    metadata when it looks trustworthy.
+    """
+    search_url = "https://www.shinhansec.com/siw/etc/browse/search05/data.do"
+    queries = []
+    if report:
+        title = (report.get("title") or "").strip()
+        company = (report.get("company") or "").strip()
+        if title:
+            queries.append(title)
+            queries.extend([part.strip() for part in re.split(r"[:;,\\-]", title) if part.strip()])
+        if company:
+            queries.append(company)
+
+    seen = set()
+    for query in queries:
+        if query in seen:
+            continue
+        seen.add(query)
+        try:
+            resp = client.post(
+                search_url,
+                data={"startCount": 0, "listCount": 10, "query": query, "searchType": "A", "boardCode": ""},
+                headers={"Referer": external_url},
+            )
+            resp.raise_for_status()
+            body = resp.json().get("body", {})
+            collections = body.get("collectionList", [])
+            if not collections:
+                continue
+            for item in collections[0].get("itemList", []):
+                if str(item.get("EXT", "")).lower() != "pdf":
+                    continue
+                file_path = item.get("FILE_PATH")
+                display_name = item.get("DISPLAYNAME")
+                title = str(item.get("TITLE", ""))
+                company = str(report.get("company", "")) if report else ""
+                if not file_path or not display_name:
+                    continue
+                # Require at least some textual overlap so we do not grab a
+                # random report from Shinhan's recent feed.
+                if company and company not in title and company not in query:
+                    continue
+                return urljoin("https://www.shinhansec.com", f"{file_path}/{display_name}")
+        except (httpx.HTTPError, json.JSONDecodeError):
+            continue
+
+    return None
+
+
+def _resolve_external_pdf_url(client: httpx.Client, external_url: str, report: Optional[dict]) -> Optional[str]:
+    parsed = urlparse(external_url)
+    host = parsed.netloc.lower()
+
+    if "shinhansec.com" in host:
+        resolved = _resolve_shinhan_pdf_url(client, external_url, report)
+        if resolved:
+            return resolved
+
+    try:
+        resp = client.get(external_url)
+        resp.raise_for_status()
+    except httpx.HTTPError:
+        return None
+
+    return _find_pdf_like_link_in_html(resp.text, str(resp.url))
+
+
+def download_pdf(pdf_url: str, report: Optional[dict] = None) -> Optional[bytes]:
+    """
+    Downloads a PDF from Naver research.
+    If given a report detail page, first resolve the actual PDF URL from that page.
+    """
     with httpx.Client(timeout=60, headers=HEADERS, follow_redirects=True) as client:
-        resp = client.get(pdf_url)
+        target_url = pdf_url
+        if "company_read.naver" in pdf_url:
+            page_resp = client.get(pdf_url)
+            page_resp.raise_for_status()
+            resolved_pdf_url = _extract_pdf_url_from_report_page(page_resp.text, str(page_resp.url))
+            if resolved_pdf_url:
+                target_url = resolved_pdf_url
+            else:
+                external_url = _extract_external_report_url_from_page(page_resp.text, str(page_resp.url))
+                if not external_url:
+                    return None
+                resolved_external_pdf_url = _resolve_external_pdf_url(client, external_url, report)
+                if not resolved_external_pdf_url:
+                    return None
+                target_url = resolved_external_pdf_url
+
+        resp = client.get(target_url)
         resp.raise_for_status()
         content_type = resp.headers.get("content-type", "")
         if "text/html" in content_type:  # got an error page instead of PDF

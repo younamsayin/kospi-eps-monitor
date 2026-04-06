@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS analyst_reports (
     ticker      TEXT NOT NULL,
     company     TEXT,
     broker      TEXT,
+    source      TEXT,
     title       TEXT,
     report_url  TEXT UNIQUE,
     report_date TEXT,
@@ -52,6 +53,23 @@ def get_conn():
 def init_db():
     with get_conn() as conn:
         conn.executescript(DDL)
+        columns = {
+            row["name"] for row in conn.execute("PRAGMA table_info(analyst_reports)").fetchall()
+        }
+        if "source" not in columns:
+            conn.execute("ALTER TABLE analyst_reports ADD COLUMN source TEXT")
+        conn.execute(
+            """
+            UPDATE analyst_reports
+            SET source = CASE
+                WHEN report_url LIKE '%bondweb.co.kr%' THEN 'bondweb'
+                WHEN report_url LIKE '%stock.pstatic.net%' THEN 'naver'
+                WHEN report_url LIKE '%finance.naver.com%' THEN 'naver'
+                ELSE source
+            END
+            WHERE source IS NULL OR source = ''
+            """
+        )
     print(f"Database initialized at {DB_PATH}")
 
 
@@ -82,8 +100,8 @@ def report_exists(conn, report_url: str) -> bool:
 def insert_report(conn, report: dict) -> int:
     cur = conn.execute(
         """
-        INSERT INTO analyst_reports (ticker, company, broker, title, report_url, report_date)
-        VALUES (:ticker, :company, :broker, :title, :report_url, :report_date)
+        INSERT INTO analyst_reports (ticker, company, broker, source, title, report_url, report_date)
+        VALUES (:ticker, :company, :broker, :source, :title, :report_url, :report_date)
         """,
         report,
     )

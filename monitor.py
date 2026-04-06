@@ -148,7 +148,10 @@ def run_source(conn, source_name: str, reports: list, download_fn, kospi200_tick
         label = f"{report['company']} ({report['ticker']})" if report.get("ticker") else report["title"][:40]
         print(f"  Processing: {label} — {report['broker']}")
 
-        pdf_bytes = download_fn(report["report_url"])
+        try:
+            pdf_bytes = download_fn(report["report_url"], report)
+        except TypeError:
+            pdf_bytes = download_fn(report["report_url"])
         if not pdf_bytes:
             print(f"    [!] Could not download PDF, skipping.")
             continue

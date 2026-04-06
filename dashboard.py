@@ -4,10 +4,13 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 from dotenv import load_dotenv
+from db.models import init_db
 
 load_dotenv()
 
 DB_PATH = os.environ.get("DB_PATH", "kospi_eps.db")
+
+init_db()
 
 st.set_page_config(page_title="KOSPI EPS Monitor", layout="wide")
 
@@ -401,7 +404,7 @@ with tab3:
     params = (selected_ticker,) if selected_ticker else ()
 
     reports_df = q(f"""
-        SELECT company, ticker, broker, title, report_date, report_url
+        SELECT company, ticker, broker, source, title, report_date, report_url
         FROM analyst_reports
         WHERE ticker != '' {ticker_filter}
         ORDER BY report_date DESC, fetched_at DESC
@@ -413,7 +416,7 @@ with tab3:
     else:
         for _, row in reports_df.iterrows():
             with st.container():
-                c1, c2, c3 = st.columns([3, 2, 1])
+                c1, c2, c3, c4 = st.columns([3, 2, 1.2, 1])
                 with c1:
                     st.markdown(f"**{row['company']}** ({row['ticker']})")
                     st.caption(row["title"])
@@ -421,6 +424,10 @@ with tab3:
                     st.write(row["broker"])
                     st.caption(row["report_date"])
                 with c3:
+                    source = row["source"] if pd.notna(row["source"]) and row["source"] else "-"
+                    st.write(str(source).title())
+                    st.caption("Source")
+                with c4:
                     st.link_button("PDF", row["report_url"])
             st.divider()
 
