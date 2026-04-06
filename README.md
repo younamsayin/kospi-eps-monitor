@@ -40,8 +40,10 @@ GEMINI_MODEL=gemini-3.1-flash-lite-preview               # optional, this is the
 DB_PATH=kospi_eps.db
 TELEGRAM_BOT_TOKEN=your_bot_token_here                   # from @BotFather
 TELEGRAM_CHAT_ID=your_chat_id_here                       # channel or user ID
-EPS_UPGRADE_THRESHOLD=0.02                               # 2% upgrade triggers alert
-CHECK_INTERVAL_MINUTES=60
+EPS_UPGRADE_THRESHOLD=0.02                               # 2% change triggers alert
+TP_CHANGE_THRESHOLD=0.02                                 # 2% target price change triggers alert
+SCRAPE_PAGES=10                                          # pages to scrape per source (10 ≈ 1 week)
+CHECK_INTERVAL_MINUTES=1440
 ```
 
 Get a Gemini API key at [Google AI Studio](https://aistudio.google.com/).

@@ -28,6 +28,7 @@ load_dotenv()
 EPS_CHANGE_THRESHOLD = float(os.environ.get("EPS_CHANGE_THRESHOLD",
                              os.environ.get("EPS_UPGRADE_THRESHOLD", "0.02")))
 TP_CHANGE_THRESHOLD = float(os.environ.get("TP_CHANGE_THRESHOLD", "0.02"))
+SCRAPE_PAGES = int(os.environ.get("SCRAPE_PAGES", "10"))
 
 
 def refresh_kospi200():
@@ -146,11 +147,11 @@ def run_once():
         kospi200_name_map = {c["company"]: c["ticker"] for c in constituents} if constituents else {}
 
         # Naver Finance — pre-filtered to KOSPI 200 tickers
-        naver_reports = naver_fetch(pages=3, ticker_whitelist=kospi200_tickers)
+        naver_reports = naver_fetch(pages=SCRAPE_PAGES, ticker_whitelist=kospi200_tickers)
         run_source(conn, "Naver", naver_reports, naver_download, kospi200_tickers)
 
         # Bondweb — pre-filtered by company name match; remaining get Gemini extraction
-        bondweb_reports = bondweb_fetch(pages=3, ticker_whitelist=kospi200_name_map)
+        bondweb_reports = bondweb_fetch(pages=SCRAPE_PAGES, ticker_whitelist=kospi200_name_map)
         run_source(conn, "Bondweb", bondweb_reports, bondweb_download, kospi200_tickers)
 
     finally:
