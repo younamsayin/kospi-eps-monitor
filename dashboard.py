@@ -9,6 +9,8 @@ from db.models import init_db, add_favorite_company, list_favorite_companies, re
 load_dotenv()
 
 DB_PATH = os.environ.get("DB_PATH", "kospi_eps.db")
+if not os.path.isabs(DB_PATH):
+    DB_PATH = os.path.join(os.path.dirname(__file__), DB_PATH)
 CONSENSUS_MAX_AGE_DAYS = int(os.environ.get("CONSENSUS_MAX_AGE_DAYS", "90"))
 REVISION_LOOKBACK_DAYS = int(os.environ.get("REVISION_LOOKBACK_DAYS", "365"))
 
@@ -80,13 +82,17 @@ def get_conn():
 
 
 @st.cache_data(ttl=300, show_spinner=False)
-def _cached_query(sql: str, params: tuple):
+def _cached_query(sql: str, params: tuple, db_mtime: float):
     with get_conn() as conn:
         return pd.read_sql_query(sql, conn, params=params)
 
 
 def q(sql, params=()):
-    return _cached_query(sql, tuple(params))
+    try:
+        db_mtime = os.path.getmtime(DB_PATH)
+    except OSError:
+        db_mtime = 0.0
+    return _cached_query(sql, tuple(params), db_mtime)
 
 
 def get_favorites_map():
@@ -238,9 +244,12 @@ with tab1:
     ticker_filter = "AND e.ticker = ?" if selected_ticker else ""
     stale_filter = "AND DATE(COALESCE(r.report_date, DATE(e.extracted_at))) >= DATE('now', ?)"
     stale_param = f"-{CONSENSUS_MAX_AGE_DAYS} day"
-    params = [selected_year, stale_param, selected_year, stale_param]
+    params = [selected_year, stale_param]
     if selected_ticker:
-        params.extend([selected_ticker, selected_ticker])
+        params.append(selected_ticker)
+    params.extend([selected_year, stale_param])
+    if selected_ticker:
+        params.append(selected_ticker)
     params = tuple(params)
 
     consensus_df = q(f"""
@@ -310,7 +319,11 @@ with tab1:
     """, params)
 
     if consensus_df.empty:
-        st.info("No consensus data yet.")
+        scope_label = selected_company if selected_ticker else "All Companies"
+        st.info(
+            f"No consensus data for {scope_label} in {selected_year}E under the current filters. "
+            f"Try another fiscal year or click Refresh Data."
+        )
     else:
         st.subheader(f"Consensus FWD EPS {selected_year}E")
         st.caption(f"Consensus includes broker estimates from the last {CONSENSUS_MAX_AGE_DAYS} days.")
