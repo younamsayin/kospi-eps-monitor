@@ -4,7 +4,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 from dotenv import load_dotenv
-from db.models import init_db
+from db.models import init_db, add_favorite_company, list_favorite_companies, remove_favorite_company
 
 load_dotenv()
 
@@ -80,6 +80,26 @@ def q(sql, params=()):
         return pd.read_sql_query(sql, conn, params=params)
 
 
+def get_favorites_map():
+    with get_conn() as conn:
+        rows = list_favorite_companies(conn)
+    return {row["ticker"]: row["company"] for row in rows}
+
+
+def toggle_favorite_company(company_label: str):
+    if company_label == "All":
+        return
+    ticker = company_label.split("(")[-1].rstrip(")")
+    company = company_label.rsplit("(", 1)[0].strip()
+    with get_conn() as conn:
+        favorites = {row["ticker"] for row in list_favorite_companies(conn)}
+        if ticker in favorites:
+            remove_favorite_company(conn, ticker)
+        else:
+            add_favorite_company(conn, ticker, company)
+        conn.commit()
+
+
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 
 with st.sidebar:
@@ -94,11 +114,47 @@ with st.sidebar:
     company_options = ["All"] + [
         f"{row['company']} ({row['ticker']})" for _, row in companies_df.iterrows()
     ]
-    selected_company = st.selectbox("Company", company_options)
+    if "selected_company" not in st.session_state or st.session_state["selected_company"] not in company_options:
+        st.session_state["selected_company"] = "All"
+
+    favorites_map = get_favorites_map()
+
+    company_col, star_col = st.columns([6, 1])
+    with company_col:
+        selected_company = st.selectbox("Company", company_options, key="selected_company")
+    with star_col:
+        is_favorite = False
+        if selected_company != "All":
+            selected_ticker_preview = selected_company.split("(")[-1].rstrip(")")
+            is_favorite = selected_ticker_preview in favorites_map
+        star_label = "★" if is_favorite else "☆"
+        if st.button(
+            star_label,
+            key="favorite_toggle",
+            disabled=(selected_company == "All"),
+            help="Add/remove this company from favorites",
+            use_container_width=True,
+        ):
+            toggle_favorite_company(selected_company)
+            st.rerun()
+
+    if favorites_map:
+        st.caption("Favorites")
+        favorite_labels = [
+            f"{company} ({ticker})"
+            for ticker, company in sorted(favorites_map.items(), key=lambda item: item[1])
+            if f"{company} ({ticker})" in company_options
+        ]
+        fav_cols = st.columns(2)
+        for idx, label in enumerate(favorite_labels):
+            with fav_cols[idx % 2]:
+                if st.button(label, key=f"favorite_{label}", use_container_width=True):
+                    st.session_state["selected_company"] = label
+                    st.rerun()
 
     if selected_company != "All":
         if st.button("← All Companies", use_container_width=True):
-            st.session_state["company_index"] = 0
+            st.session_state["selected_company"] = "All"
             st.rerun()
 
     years_df = q("SELECT DISTINCT fiscal_year FROM eps_estimates ORDER BY fiscal_year")

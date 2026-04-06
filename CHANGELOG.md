@@ -24,6 +24,8 @@
 - Redesigned the dashboard so `Consensus` handles both single-company and `All` views, with weekly EPS trends and a latest broker report table
 - Added monitor-side fiscal year sanity checks to correct one-year-shifted EPS series before saving and ignore pre-report-year rows
 - Fixed Telegram EPS/TP alert date comparisons so duplicate same-day ingestions do not produce `same date → same date` messages
+- Added persistent favorite companies in the dashboard sidebar with a star toggle and one-click shortcuts
+- Tightened Bondweb company matching so shorter company names no longer match inside brokerage names like `현대차증권`
 
 ## [0.1.0] - 2026-04-06
 

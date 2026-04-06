@@ -78,6 +78,34 @@ def _strip_leading_byline(title: str) -> str:
     return stripped
 
 
+def _is_company_boundary_char(ch: str) -> bool:
+    if not ch:
+        return True
+    if ch.isspace():
+        return True
+    return ch in "[](){}<>/:,-+&"
+
+
+def _contains_company_token(title: str, company: str) -> bool:
+    if not title or not company:
+        return False
+
+    start = 0
+    while True:
+        idx = title.find(company, start)
+        if idx == -1:
+            return False
+
+        prev_char = title[idx - 1] if idx > 0 else ""
+        next_index = idx + len(company)
+        next_char = title[next_index] if next_index < len(title) else ""
+
+        if _is_company_boundary_char(prev_char) and _is_company_boundary_char(next_char):
+            return True
+
+        start = idx + len(company)
+
+
 def _dedupe_reports(reports: list) -> list:
     deduped = []
     seen_urls = set()
@@ -113,11 +141,9 @@ def _extract_list_cursors(html_bytes: bytes) -> tuple[str, str]:
 
 def _title_likely_about_company(title: str, company: str) -> bool:
     stripped = _strip_leading_byline(title)
-    normalized_title = _normalize_text(stripped)
-    normalized_company = _normalize_text(company)
-    if not normalized_title or not normalized_company:
+    if not stripped or not company:
         return False
-    if normalized_company not in normalized_title:
+    if not _contains_company_token(stripped, company):
         return False
 
     # Prefer titles that lead with the company name or clearly frame it as

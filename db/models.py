@@ -38,6 +38,12 @@ CREATE TABLE IF NOT EXISTS eps_estimates (
     extracted_at    TEXT DEFAULT (datetime('now'))
 );
 
+CREATE TABLE IF NOT EXISTS favorite_companies (
+    ticker      TEXT PRIMARY KEY,
+    company     TEXT NOT NULL,
+    created_at  TEXT DEFAULT (datetime('now'))
+);
+
 CREATE INDEX IF NOT EXISTS idx_eps_ticker_year ON eps_estimates(ticker, fiscal_year);
 CREATE INDEX IF NOT EXISTS idx_reports_ticker   ON analyst_reports(ticker);
 """
@@ -219,3 +225,27 @@ def get_latest_prior_report_estimates(conn, ticker: str, broker: str, current_re
     ).fetchall()
 
     return {int(row["fiscal_year"]): float(row["fwd_eps"]) for row in rows if row["fiscal_year"] is not None}
+
+
+def list_favorite_companies(conn) -> list:
+    return conn.execute(
+        "SELECT ticker, company FROM favorite_companies ORDER BY company"
+    ).fetchall()
+
+
+def add_favorite_company(conn, ticker: str, company: str):
+    conn.execute(
+        """
+        INSERT INTO favorite_companies (ticker, company)
+        VALUES (?, ?)
+        ON CONFLICT(ticker) DO UPDATE SET company = excluded.company
+        """,
+        (ticker, company),
+    )
+
+
+def remove_favorite_company(conn, ticker: str):
+    conn.execute(
+        "DELETE FROM favorite_companies WHERE ticker = ?",
+        (ticker,),
+    )
