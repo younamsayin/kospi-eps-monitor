@@ -50,6 +50,48 @@ def _get_client() -> genai.Client:
     return genai.Client(api_key=os.environ["GEMINI_API_KEY"])
 
 
+def _normalize_extraction_payload(payload) -> Optional[dict]:
+    """Coerce Gemini JSON output into the dict shape expected by the monitor."""
+    if isinstance(payload, dict):
+        if isinstance(payload.get("data"), dict):
+            payload = payload["data"]
+        elif isinstance(payload.get("result"), dict):
+            payload = payload["result"]
+    elif isinstance(payload, list):
+        # Gemini occasionally returns a one-item JSON array even when asked
+        # for a single object.
+        dict_items = [item for item in payload if isinstance(item, dict)]
+        if len(dict_items) == 1:
+            payload = dict_items[0]
+        elif dict_items:
+            payload = {
+                "company": dict_items[0].get("company", ""),
+                "ticker": dict_items[0].get("ticker", ""),
+                "broker": dict_items[0].get("broker", ""),
+                "recommendation": dict_items[0].get("recommendation"),
+                "target_price": dict_items[0].get("target_price"),
+                "estimates": dict_items,
+            }
+        else:
+            return None
+    else:
+        return None
+
+    payload.setdefault("company", "")
+    payload.setdefault("ticker", "")
+    payload.setdefault("broker", "")
+    payload.setdefault("recommendation", None)
+    payload.setdefault("target_price", None)
+
+    estimates = payload.get("estimates")
+    if isinstance(estimates, dict):
+        payload["estimates"] = [estimates]
+    elif not isinstance(estimates, list):
+        payload["estimates"] = []
+
+    return payload
+
+
 def extract_eps_from_pdf(pdf_bytes: bytes) -> Optional[dict]:
     """
     Sends PDF bytes to Gemini and extracts structured EPS data.
@@ -83,7 +125,13 @@ def extract_eps_from_pdf(pdf_bytes: bytes) -> Optional[dict]:
             if raw.startswith("json"):
                 raw = raw[4:]
 
-        return json.loads(raw)
+        parsed = json.loads(raw)
+        normalized = _normalize_extraction_payload(parsed)
+        if not normalized:
+            print(f"[Gemini] Unexpected JSON shape: {type(parsed).__name__}")
+            return None
+
+        return normalized
 
     except Exception as e:
         print(f"[Gemini] Extraction failed: {e}")
