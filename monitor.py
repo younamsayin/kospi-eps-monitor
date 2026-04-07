@@ -340,6 +340,8 @@ def _should_retry_gemini_failure(error) -> bool:
     message = (error or "").lower()
     if "document has no pages" in message or "no pages" in message:
         return False
+    if "multi-company" in message or "ambiguous extraction" in message:
+        return False
     return True
 
 

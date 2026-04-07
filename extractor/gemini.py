@@ -208,7 +208,9 @@ def extract_eps_from_pdf(pdf_bytes: bytes, return_error: bool = False):
         parsed = json.loads(raw)
         normalized = _normalize_extraction_payload(parsed)
         if not normalized:
-            error = f"Gemini returned unexpected JSON shape: {type(parsed).__name__}"
+            error = "Gemini returned multi-company payload; skipping ambiguous extraction"
+            if not isinstance(parsed, list):
+                error = f"Gemini returned unexpected JSON shape: {type(parsed).__name__}"
             logger.warning(error)
             return _format_extraction_result(None, error, return_error)
 

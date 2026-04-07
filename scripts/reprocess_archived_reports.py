@@ -23,6 +23,15 @@ REPORTS_DIR = Path(os.environ.get("REPORTS_DIR", REPO_ROOT / "reports"))
 GEMINI_RETRY_DELAY_MINUTES = int(os.environ.get("GEMINI_RETRY_DELAY_MINUTES", "30"))
 
 
+def _should_retry_gemini_failure(error: str) -> bool:
+    message = (error or "").lower()
+    if "document has no pages" in message or "no pages" in message:
+        return False
+    if "multi-company" in message or "ambiguous extraction" in message:
+        return False
+    return True
+
+
 def _safe_filename_part(value: str, fallback: str) -> str:
     cleaned = re.sub(r"[^\w\-.]+", "_", (value or "").strip(), flags=re.UNICODE)
     cleaned = cleaned.strip("._")
@@ -227,8 +236,8 @@ def main():
                 extraction_failed += 1
                 gemini_error = gemini_error or "Gemini extraction returned no usable data during archive reprocess"
                 print(f"    [!] Gemini extraction failed: {gemini_error}")
-                if "no pages" in gemini_error.lower():
-                    print("    Not retrying because Gemini reported that the document has no pages.")
+                if not _should_retry_gemini_failure(gemini_error):
+                    print("    Not retrying because Gemini reported a permanent extraction failure.")
                 else:
                     upsert_gemini_retry(
                         conn,
