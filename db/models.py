@@ -45,8 +45,28 @@ CREATE TABLE IF NOT EXISTS favorite_companies (
     created_at  TEXT DEFAULT (datetime('now'))
 );
 
+CREATE TABLE IF NOT EXISTS gemini_extraction_retries (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    ticker          TEXT NOT NULL,
+    company         TEXT,
+    broker          TEXT,
+    source          TEXT,
+    title           TEXT,
+    report_url      TEXT,
+    report_date     TEXT,
+    pdf_hash        TEXT NOT NULL,
+    local_pdf_path  TEXT NOT NULL,
+    attempts        INTEGER DEFAULT 0,
+    last_error      TEXT,
+    next_retry_at   TEXT NOT NULL,
+    created_at      TEXT DEFAULT (datetime('now')),
+    updated_at      TEXT DEFAULT (datetime('now'))
+);
+
 CREATE INDEX IF NOT EXISTS idx_eps_ticker_year ON eps_estimates(ticker, fiscal_year);
 CREATE INDEX IF NOT EXISTS idx_reports_ticker   ON analyst_reports(ticker);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_gemini_retries_pdf_hash ON gemini_extraction_retries(pdf_hash);
+CREATE INDEX IF NOT EXISTS idx_gemini_retries_next_retry ON gemini_extraction_retries(next_retry_at);
 """
 
 
@@ -117,6 +137,14 @@ def report_exists_by_pdf_hash(conn, pdf_hash: str) -> bool:
     return row is not None
 
 
+def gemini_retry_exists_by_pdf_hash(conn, pdf_hash: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM gemini_extraction_retries WHERE pdf_hash = ?",
+        (pdf_hash,),
+    ).fetchone()
+    return row is not None
+
+
 def insert_report(conn, report: dict) -> int:
     cur = conn.execute(
         """
@@ -135,6 +163,78 @@ def insert_eps(conn, estimate: dict):
         VALUES (:report_id, :ticker, :broker, :fiscal_year, :fwd_eps, :target_price, :recommendation)
         """,
         estimate,
+    )
+
+
+def upsert_gemini_retry(conn, report: dict, retry_after_minutes: int, last_error: str):
+    conn.execute(
+        """
+        INSERT INTO gemini_extraction_retries (
+            ticker, company, broker, source, title, report_url, report_date,
+            pdf_hash, local_pdf_path, attempts, last_error, next_retry_at, updated_at
+        )
+        VALUES (
+            :ticker, :company, :broker, :source, :title, :report_url, :report_date,
+            :pdf_hash, :local_pdf_path, 0, :last_error,
+            datetime('now', :retry_after), datetime('now')
+        )
+        ON CONFLICT(pdf_hash) DO UPDATE SET
+            ticker = excluded.ticker,
+            company = excluded.company,
+            broker = excluded.broker,
+            source = excluded.source,
+            title = excluded.title,
+            report_url = excluded.report_url,
+            report_date = excluded.report_date,
+            local_pdf_path = excluded.local_pdf_path,
+            last_error = excluded.last_error,
+            next_retry_at = excluded.next_retry_at,
+            updated_at = datetime('now')
+        """,
+        {
+            "ticker": report.get("ticker") or "",
+            "company": report.get("company"),
+            "broker": report.get("broker"),
+            "source": report.get("source"),
+            "title": report.get("title"),
+            "report_url": report.get("report_url"),
+            "report_date": report.get("report_date"),
+            "pdf_hash": report["pdf_hash"],
+            "local_pdf_path": report["local_pdf_path"],
+            "last_error": last_error,
+            "retry_after": f"+{int(retry_after_minutes)} minutes",
+        },
+    )
+
+
+def get_due_gemini_retries(conn, limit: int) -> list:
+    return conn.execute(
+        """
+        SELECT *
+        FROM gemini_extraction_retries
+        WHERE next_retry_at <= datetime('now')
+        ORDER BY next_retry_at, id
+        LIMIT ?
+        """,
+        (limit,),
+    ).fetchall()
+
+
+def delete_gemini_retry(conn, retry_id: int):
+    conn.execute("DELETE FROM gemini_extraction_retries WHERE id = ?", (retry_id,))
+
+
+def mark_gemini_retry_failed(conn, retry_id: int, retry_after_minutes: int, last_error: str):
+    conn.execute(
+        """
+        UPDATE gemini_extraction_retries
+        SET attempts = attempts + 1,
+            last_error = ?,
+            next_retry_at = datetime('now', ?),
+            updated_at = datetime('now')
+        WHERE id = ?
+        """,
+        (last_error, f"+{int(retry_after_minutes)} minutes", retry_id),
     )
 
 

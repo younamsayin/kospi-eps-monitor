@@ -21,6 +21,9 @@ from db.models import (
     get_previous_eps_record, get_previous_target_price_record,
     get_latest_prior_report_estimates,
     report_exists_by_pdf_hash,
+    gemini_retry_exists_by_pdf_hash,
+    upsert_gemini_retry, get_due_gemini_retries,
+    delete_gemini_retry, mark_gemini_retry_failed,
 )
 from scraper.krx import fetch_kospi200
 from scraper.naver import fetch_recent_reports as naver_fetch, download_pdf as naver_download
@@ -42,6 +45,8 @@ SCRAPE_PAGES = int(os.environ.get("SCRAPE_PAGES", "10"))
 NAVER_SCRAPE_PAGES = int(os.environ.get("NAVER_SCRAPE_PAGES", os.environ.get("SCRAPE_PAGES", "30")))
 BONDWEB_SCRAPE_PAGES = int(os.environ.get("BONDWEB_SCRAPE_PAGES", os.environ.get("SCRAPE_PAGES", "10")))
 PROCESS_DELAY_SECONDS = float(os.environ.get("PROCESS_DELAY_SECONDS", "1"))
+GEMINI_RETRY_DELAY_MINUTES = int(os.environ.get("GEMINI_RETRY_DELAY_MINUTES", "30"))
+GEMINI_RETRY_LIMIT = int(os.environ.get("GEMINI_RETRY_LIMIT", "25"))
 REPORTS_DIR = os.environ.get(
     "REPORTS_DIR",
     os.path.join(os.path.dirname(__file__), "reports"),
@@ -288,8 +293,8 @@ def refresh_kospi200():
     return constituents
 
 
-def process_report(conn, report: dict, pdf_bytes: bytes, kospi200_tickers: set):
-    """Extract EPS from a PDF, save to DB, and alert on changes."""
+def _extract_and_save_report(conn, report: dict, pdf_bytes: bytes, kospi200_tickers: set) -> str:
+    """Extract EPS from a PDF and save to DB. Returns a compact status string."""
 
     archived_path = report.get("local_pdf_path")
     if not archived_path:
@@ -299,14 +304,13 @@ def process_report(conn, report: dict, pdf_bytes: bytes, kospi200_tickers: set):
 
     extracted = extract_eps_from_pdf(pdf_bytes)
     if not extracted:
-        logger.warning("    [!] Gemini extraction failed, skipping.")
-        return
+        return "gemini_failed"
 
     _apply_extracted_metadata(report, extracted)
 
     # Skip if still no ticker, or not in KOSPI 200
     if not report.get("ticker") or report["ticker"] not in kospi200_tickers:
-        return
+        return "non_kospi"
 
     extracted["estimates"] = _normalize_estimates(conn, report, extracted)
 
@@ -316,9 +320,112 @@ def process_report(conn, report: dict, pdf_bytes: bytes, kospi200_tickers: set):
     if not report_id:
         logger.warning("    [!] Report insert was ignored due to duplicate key, skipping estimates.")
         conn.rollback()
-        return
+        return "insert_duplicate"
     _insert_report_estimates(conn, report_id, report, extracted)
     conn.commit()
+    return "saved"
+
+
+def _queue_gemini_retry(conn, report: dict, last_error: str):
+    upsert_gemini_retry(conn, report, GEMINI_RETRY_DELAY_MINUTES, last_error)
+    conn.commit()
+    logger.warning(
+        "    [!] Gemini extraction failed; retry scheduled in %s minutes.",
+        GEMINI_RETRY_DELAY_MINUTES,
+    )
+
+
+def process_report(conn, report: dict, pdf_bytes: bytes, kospi200_tickers: set) -> str:
+    """Extract EPS from a PDF, save to DB, and alert on changes."""
+    status = _extract_and_save_report(conn, report, pdf_bytes, kospi200_tickers)
+    if status == "gemini_failed":
+        _queue_gemini_retry(conn, report, "Gemini extraction returned no usable data")
+    return status
+
+
+def process_due_gemini_retries(conn, kospi200_tickers: set):
+    retries = get_due_gemini_retries(conn, GEMINI_RETRY_LIMIT)
+    if not retries:
+        return
+
+    logger.info("[Gemini Retry] Processing %s due extraction retry item(s).", len(retries))
+    succeeded = 0
+    failed = 0
+    skipped = 0
+
+    for retry in retries:
+        report = {
+            "ticker": retry["ticker"],
+            "company": retry["company"],
+            "broker": retry["broker"],
+            "source": retry["source"],
+            "title": retry["title"],
+            "report_url": retry["report_url"],
+            "report_date": retry["report_date"],
+            "pdf_hash": retry["pdf_hash"],
+            "local_pdf_path": retry["local_pdf_path"],
+        }
+        label = f"{report.get('company')} ({report.get('ticker')}) — {report.get('broker')}"
+        logger.info("[Gemini Retry] Retrying %s | attempt=%s", label, int(retry["attempts"] or 0) + 1)
+
+        local_pdf_path = retry["local_pdf_path"]
+        if not local_pdf_path or not os.path.exists(local_pdf_path):
+            skipped += 1
+            mark_gemini_retry_failed(
+                conn,
+                retry["id"],
+                GEMINI_RETRY_DELAY_MINUTES,
+                f"Archived PDF missing: {local_pdf_path}",
+            )
+            conn.commit()
+            logger.warning("[Gemini Retry] Archived PDF missing, retry rescheduled: %s", local_pdf_path)
+            continue
+
+        if report_exists_by_pdf_hash(conn, retry["pdf_hash"]):
+            skipped += 1
+            delete_gemini_retry(conn, retry["id"])
+            conn.commit()
+            logger.info("[Gemini Retry] PDF already inserted, removing retry: %s", label)
+            continue
+
+        with open(local_pdf_path, "rb") as f:
+            pdf_bytes = f.read()
+
+        status = _extract_and_save_report(conn, report, pdf_bytes, kospi200_tickers)
+        if status == "saved":
+            succeeded += 1
+            delete_gemini_retry(conn, retry["id"])
+            conn.commit()
+            logger.info("[Gemini Retry] Saved retry result: %s", label)
+        elif status == "gemini_failed":
+            failed += 1
+            mark_gemini_retry_failed(
+                conn,
+                retry["id"],
+                GEMINI_RETRY_DELAY_MINUTES,
+                "Gemini extraction returned no usable data",
+            )
+            conn.commit()
+            logger.warning(
+                "[Gemini Retry] Gemini still failed; retry rescheduled in %s minutes: %s",
+                GEMINI_RETRY_DELAY_MINUTES,
+                label,
+            )
+        else:
+            skipped += 1
+            delete_gemini_retry(conn, retry["id"])
+            conn.commit()
+            logger.info("[Gemini Retry] Removing retry after status=%s: %s", status, label)
+
+        time.sleep(PROCESS_DELAY_SECONDS)
+
+    logger.info(
+        "[Gemini Retry] Done. succeeded=%s failed=%s skipped=%s total=%s",
+        succeeded,
+        failed,
+        skipped,
+        len(retries),
+    )
 
 
 def run_source(conn, source_name: str, reports: list, download_fn, kospi200_tickers: set):
@@ -386,14 +493,18 @@ def run_source(conn, source_name: str, reports: list, download_fn, kospi200_tick
             skipped_duplicate_pdf += 1
             logger.warning("    [!] Duplicate PDF content already saved, skipping.")
             continue
+        if gemini_retry_exists_by_pdf_hash(conn, pdf_hash):
+            logger.warning("    [!] Gemini retry already scheduled for this PDF, skipping until retry time.")
+            continue
         report["pdf_hash"] = pdf_hash
 
         archived_path = _archive_report_pdf(report, pdf_bytes)
         report["local_pdf_path"] = archived_path
         logger.info("    Saved PDF: %s", archived_path)
 
-        process_report(conn, report, pdf_bytes, kospi200_tickers)
-        processed += 1
+        status = process_report(conn, report, pdf_bytes, kospi200_tickers)
+        if status == "saved":
+            processed += 1
         time.sleep(PROCESS_DELAY_SECONDS)
 
     total_elapsed = time.time() - started_at
@@ -422,6 +533,8 @@ def run_once():
         # does not send every Bondweb report through Gemini.
         kospi200_name_map = {c["company"]: c["ticker"] for c in cached_constituents}
 
+        process_due_gemini_retries(conn, kospi200_tickers)
+
         # Naver Finance — pre-filtered to KOSPI 200 tickers
         naver_reports = naver_fetch(pages=NAVER_SCRAPE_PAGES, ticker_whitelist=kospi200_tickers)
         run_source(conn, "Naver", naver_reports, naver_download, kospi200_tickers)
@@ -434,12 +547,23 @@ def run_once():
         conn.close()
 
 
+def run_gemini_retry_once():
+    conn = get_conn()
+    try:
+        kospi200_tickers = {row["ticker"] for row in get_kospi200(conn)}
+        process_due_gemini_retries(conn, kospi200_tickers)
+    finally:
+        conn.close()
+
+
 def run_scheduled(interval_minutes: int = 1440):
     from apscheduler.schedulers.blocking import BlockingScheduler
 
     scheduler = BlockingScheduler()
     scheduler.add_job(run_once, "interval", minutes=interval_minutes)
+    scheduler.add_job(run_gemini_retry_once, "interval", minutes=GEMINI_RETRY_DELAY_MINUTES)
     logger.info("[Monitor] Starting — checking every %s minutes.", interval_minutes)
+    logger.info("[Gemini Retry] Checking retry queue every %s minutes.", GEMINI_RETRY_DELAY_MINUTES)
     run_once()  # run immediately on start
     scheduler.start()
 
