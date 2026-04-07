@@ -73,10 +73,10 @@ def _parse_report_from_path(path: Path) -> Optional[dict]:
 
     stem = Path(filename).stem
     parts = stem.split("_")
-    if not parts or not re.fullmatch(r"\d{6}", parts[0]):
+    if not parts or not re.fullmatch(r"[0-9A-Z]{6}", parts[0], flags=re.IGNORECASE):
         return None
 
-    ticker = parts[0]
+    ticker = parts[0].upper()
     safe_company = _safe_filename_part(company, "unknown")
     prefix = f"{ticker}_{safe_company}_"
     if stem.startswith(prefix):
