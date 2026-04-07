@@ -200,6 +200,89 @@ def _log_progress(
     )
 
 
+def _report_label(report: dict) -> str:
+    company = report.get("company") or "Unknown company"
+    ticker = report.get("ticker")
+    broker = report.get("broker") or "Unknown broker"
+    report_date = report.get("report_date") or "unknown date"
+    title = (report.get("title") or "untitled").strip()
+    ticker_part = f" ({ticker})" if ticker else ""
+    return f"{company}{ticker_part} — {broker} — {report_date} — {title}"
+
+
+def _empty_source_stats(source_name: str) -> dict:
+    return {
+        "source": source_name,
+        "scanned": 0,
+        "downloaded": 0,
+        "archived": 0,
+        "saved": 0,
+        "existing_url": 0,
+        "duplicate_pdf": 0,
+        "download_failed": 0,
+        "retry_pending": 0,
+        "gemini_failed": 0,
+        "non_kospi": 0,
+        "insert_duplicate": 0,
+        "other_not_saved": 0,
+        "elapsed_seconds": 0,
+    }
+
+
+def _log_run_summary(source_stats: list[dict], retry_stats: dict, elapsed_seconds: float):
+    totals = _empty_source_stats("Total")
+    for stats in source_stats:
+        for key, value in stats.items():
+            if key in ("source",):
+                continue
+            totals[key] = totals.get(key, 0) + value
+
+    logger.info("=" * 72)
+    logger.info("[Run Summary] Completed in %s", _format_eta(elapsed_seconds))
+    for stats in source_stats:
+        logger.info(
+            "[Run Summary] %s: scanned=%s downloaded=%s archived=%s saved=%s "
+            "existing_url=%s duplicate_pdf=%s download_fail=%s gemini_fail=%s "
+            "retry_pending=%s non_kospi=%s insert_duplicate=%s other_not_saved=%s elapsed=%s",
+            stats["source"],
+            stats["scanned"],
+            stats["downloaded"],
+            stats["archived"],
+            stats["saved"],
+            stats["existing_url"],
+            stats["duplicate_pdf"],
+            stats["download_failed"],
+            stats["gemini_failed"],
+            stats["retry_pending"],
+            stats["non_kospi"],
+            stats["insert_duplicate"],
+            stats["other_not_saved"],
+            _format_eta(stats["elapsed_seconds"]),
+        )
+
+    logger.info(
+        "[Run Summary] Total source reports: scanned=%s downloaded=%s archived=%s saved=%s "
+        "existing_url=%s duplicate_pdf=%s download_fail=%s gemini_fail=%s retry_pending=%s",
+        totals["scanned"],
+        totals["downloaded"],
+        totals["archived"],
+        totals["saved"],
+        totals["existing_url"],
+        totals["duplicate_pdf"],
+        totals["download_failed"],
+        totals["gemini_failed"],
+        totals["retry_pending"],
+    )
+    logger.info(
+        "[Run Summary] Gemini retries: due=%s succeeded=%s failed=%s skipped=%s",
+        retry_stats["due"],
+        retry_stats["succeeded"],
+        retry_stats["failed"],
+        retry_stats["skipped"],
+    )
+    logger.info("=" * 72)
+
+
 def _apply_extracted_metadata(report: dict, extracted: dict):
     if not report.get("ticker") and extracted.get("ticker"):
         report["ticker"] = extracted["ticker"]
@@ -359,8 +442,9 @@ def process_report(conn, report: dict, pdf_bytes: bytes, kospi200_tickers: set) 
 
 def process_due_gemini_retries(conn, kospi200_tickers: set):
     retries = get_due_gemini_retries(conn, GEMINI_RETRY_LIMIT)
+    stats = {"due": len(retries), "succeeded": 0, "failed": 0, "skipped": 0}
     if not retries:
-        return
+        return stats
 
     logger.info("[Gemini Retry] Processing %s due extraction retry item(s).", len(retries))
     succeeded = 0
@@ -412,19 +496,26 @@ def process_due_gemini_retries(conn, kospi200_tickers: set):
             conn.commit()
             logger.info("[Gemini Retry] Saved retry result: %s", label)
         elif status == "gemini_failed":
-            failed += 1
-            mark_gemini_retry_failed(
-                conn,
-                retry["id"],
-                GEMINI_RETRY_DELAY_MINUTES,
-                "Gemini extraction returned no usable data",
-            )
-            conn.commit()
-            logger.warning(
-                "[Gemini Retry] Gemini still failed; retry rescheduled in %s minutes: %s",
-                GEMINI_RETRY_DELAY_MINUTES,
-                label,
-            )
+            error = report.get("_gemini_error") or "Gemini extraction returned no usable data"
+            if _should_retry_gemini_failure(error):
+                failed += 1
+                mark_gemini_retry_failed(
+                    conn,
+                    retry["id"],
+                    GEMINI_RETRY_DELAY_MINUTES,
+                    error,
+                )
+                conn.commit()
+                logger.warning(
+                    "[Gemini Retry] Gemini still failed; retry rescheduled in %s minutes: %s",
+                    GEMINI_RETRY_DELAY_MINUTES,
+                    label,
+                )
+            else:
+                skipped += 1
+                delete_gemini_retry(conn, retry["id"])
+                conn.commit()
+                logger.warning("[Gemini Retry] Permanent extraction failure, removing retry: %s | %s", label, error)
         else:
             skipped += 1
             delete_gemini_retry(conn, retry["id"])
@@ -440,10 +531,14 @@ def process_due_gemini_retries(conn, kospi200_tickers: set):
         skipped,
         len(retries),
     )
+    stats.update({"succeeded": succeeded, "failed": failed, "skipped": skipped})
+    return stats
 
 
 def run_source(conn, source_name: str, reports: list, download_fn, kospi200_tickers: set):
     total_reports = len(reports)
+    stats = _empty_source_stats(source_name)
+    stats["scanned"] = total_reports
     logger.info("[%s] Found %s reports.", source_name, total_reports)
     if source_name == "Bondweb":
         bondweb_reset_download_failure_samples()
@@ -462,6 +557,7 @@ def run_source(conn, source_name: str, reports: list, download_fn, kospi200_tick
 
         if report_exists(conn, report["report_url"]):
             skipped_existing += 1
+            stats["existing_url"] += 1
             if (
                 skipped_existing == 1
                 or skipped_existing % SKIP_PROGRESS_INTERVAL == 0
@@ -480,7 +576,7 @@ def run_source(conn, source_name: str, reports: list, download_fn, kospi200_tick
                 )
             continue
 
-        label = f"{report['company']} ({report['ticker']})" if report.get("ticker") else report["title"][:40]
+        label = _report_label(report)
         _log_progress(
             source_name,
             idx,
@@ -490,8 +586,9 @@ def run_source(conn, source_name: str, reports: list, download_fn, kospi200_tick
             skipped_download,
             skipped_duplicate_pdf,
             eta,
-            f"Processing: {label} — {report['broker']}",
+            f"Found: {label}",
         )
+        logger.info("[%s] [%s/%s] Downloading PDF...", source_name, idx, total_reports)
 
         try:
             pdf_bytes = download_fn(report["report_url"], report)
@@ -499,29 +596,50 @@ def run_source(conn, source_name: str, reports: list, download_fn, kospi200_tick
             pdf_bytes = download_fn(report["report_url"])
         if not pdf_bytes:
             skipped_download += 1
-            logger.warning("    [!] Could not download PDF, skipping.")
+            stats["download_failed"] += 1
+            logger.warning("[%s] [%s/%s] Download failed, skipping: %s", source_name, idx, total_reports, label)
             continue
+        stats["downloaded"] += 1
 
         pdf_hash = hashlib.sha256(pdf_bytes).hexdigest()
         if report_exists_by_pdf_hash(conn, pdf_hash):
             skipped_duplicate_pdf += 1
-            logger.warning("    [!] Duplicate PDF content already saved, skipping.")
+            stats["duplicate_pdf"] += 1
+            logger.warning("[%s] [%s/%s] Duplicate PDF content already saved, skipping: %s", source_name, idx, total_reports, label)
             continue
         if gemini_retry_exists_by_pdf_hash(conn, pdf_hash):
-            logger.warning("    [!] Gemini retry already scheduled for this PDF, skipping until retry time.")
+            stats["retry_pending"] += 1
+            logger.warning("[%s] [%s/%s] Gemini retry already scheduled for this PDF, skipping until retry time: %s", source_name, idx, total_reports, label)
             continue
         report["pdf_hash"] = pdf_hash
 
         archived_path = _archive_report_pdf(report, pdf_bytes)
         report["local_pdf_path"] = archived_path
-        logger.info("    Saved PDF: %s", archived_path)
+        stats["archived"] += 1
+        logger.info("[%s] [%s/%s] Archived PDF: %s", source_name, idx, total_reports, archived_path)
+        logger.info("[%s] [%s/%s] Sending to Gemini: %s", source_name, idx, total_reports, label)
 
         status = process_report(conn, report, pdf_bytes, kospi200_tickers)
         if status == "saved":
             processed += 1
+            stats["saved"] += 1
+            logger.info("[%s] [%s/%s] Saved to DB: %s", source_name, idx, total_reports, label)
+        elif status == "gemini_failed":
+            stats["gemini_failed"] += 1
+            logger.warning("[%s] [%s/%s] Not saved to DB after Gemini step: status=%s | %s", source_name, idx, total_reports, status, label)
+        elif status == "non_kospi":
+            stats["non_kospi"] += 1
+            logger.warning("[%s] [%s/%s] Not saved to DB after Gemini step: status=%s | %s", source_name, idx, total_reports, status, label)
+        elif status == "insert_duplicate":
+            stats["insert_duplicate"] += 1
+            logger.warning("[%s] [%s/%s] Not saved to DB after Gemini step: status=%s | %s", source_name, idx, total_reports, status, label)
+        else:
+            stats["other_not_saved"] += 1
+            logger.warning("[%s] [%s/%s] Not saved to DB after Gemini step: status=%s | %s", source_name, idx, total_reports, status, label)
         time.sleep(PROCESS_DELAY_SECONDS)
 
     total_elapsed = time.time() - started_at
+    stats["elapsed_seconds"] = total_elapsed
     logger.info(
         "[%s] Done in %s. processed=%s existing=%s download_fail=%s dup_pdf=%s total=%s",
         source_name,
@@ -534,10 +652,14 @@ def run_source(conn, source_name: str, reports: list, download_fn, kospi200_tick
     )
     if source_name == "Bondweb" and skipped_download:
         bondweb_log_download_failure_summary()
+    return stats
 
 
 def run_once():
     conn = get_conn()
+    run_started_at = time.time()
+    source_stats = []
+    retry_stats = {"due": 0, "succeeded": 0, "failed": 0, "skipped": 0}
     try:
         constituents = refresh_kospi200()
         cached_constituents = constituents if constituents else [dict(r) for r in get_kospi200(conn)]
@@ -547,17 +669,19 @@ def run_once():
         # does not send every Bondweb report through Gemini.
         kospi200_name_map = {c["company"]: c["ticker"] for c in cached_constituents}
 
-        process_due_gemini_retries(conn, kospi200_tickers)
+        retry_stats = process_due_gemini_retries(conn, kospi200_tickers)
 
         # Naver Finance — pre-filtered to KOSPI 200 tickers
         naver_reports = naver_fetch(pages=NAVER_SCRAPE_PAGES, ticker_whitelist=kospi200_tickers)
-        run_source(conn, "Naver", naver_reports, naver_download, kospi200_tickers)
+        source_stats.append(run_source(conn, "Naver", naver_reports, naver_download, kospi200_tickers))
 
         # Bondweb — pre-filtered by company name match; remaining get Gemini extraction
         bondweb_reports = bondweb_fetch(pages=BONDWEB_SCRAPE_PAGES, ticker_whitelist=kospi200_name_map)
-        run_source(conn, "Bondweb", bondweb_reports, bondweb_download, kospi200_tickers)
+        source_stats.append(run_source(conn, "Bondweb", bondweb_reports, bondweb_download, kospi200_tickers))
 
     finally:
+        if source_stats:
+            _log_run_summary(source_stats, retry_stats, time.time() - run_started_at)
         conn.close()
 
 
