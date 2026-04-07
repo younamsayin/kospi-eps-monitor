@@ -11,7 +11,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from db.models import get_conn, get_kospi200, insert_eps, insert_report
+from db.models import get_conn, get_kospi200, insert_eps, insert_report, upsert_gemini_retry
 
 try:
     sys.stdout.reconfigure(line_buffering=True)
@@ -20,6 +20,7 @@ except AttributeError:
 
 
 REPORTS_DIR = Path(os.environ.get("REPORTS_DIR", REPO_ROOT / "reports"))
+GEMINI_RETRY_DELAY_MINUTES = int(os.environ.get("GEMINI_RETRY_DELAY_MINUTES", "30"))
 
 
 def _safe_filename_part(value: str, fallback: str) -> str:
@@ -204,6 +205,8 @@ def main():
 
             pdf_bytes = path.read_bytes()
             pdf_hash = hashlib.sha256(pdf_bytes).hexdigest()
+            report["pdf_hash"] = pdf_hash
+            report["local_pdf_path"] = str(path)
             existing = _existing_hash_row(conn, pdf_hash)
             if existing:
                 skipped_existing_hash += 1
@@ -219,10 +222,22 @@ def main():
                 f"[{idx}/{len(files)}] Extracting {report['source']} "
                 f"{report['company']} ({report['ticker']}) — {report['broker']}"
             )
-            extracted = extract_eps_from_pdf(pdf_bytes)
+            extracted, gemini_error = extract_eps_from_pdf(pdf_bytes, return_error=True)
             if not extracted:
                 extraction_failed += 1
-                print("    [!] Gemini extraction failed.")
+                gemini_error = gemini_error or "Gemini extraction returned no usable data during archive reprocess"
+                print(f"    [!] Gemini extraction failed: {gemini_error}")
+                if "no pages" in gemini_error.lower():
+                    print("    Not retrying because Gemini reported that the document has no pages.")
+                else:
+                    upsert_gemini_retry(
+                        conn,
+                        report,
+                        GEMINI_RETRY_DELAY_MINUTES,
+                        gemini_error,
+                    )
+                    conn.commit()
+                    print(f"    Retry scheduled in {GEMINI_RETRY_DELAY_MINUTES} minutes.")
                 continue
 
             report_id = _insert_extracted_report(conn, report, pdf_hash, extracted, _normalize_estimates)

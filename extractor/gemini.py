@@ -139,10 +139,17 @@ def _normalize_extraction_payload(payload) -> Optional[dict]:
     return payload
 
 
-def extract_eps_from_pdf(pdf_bytes: bytes) -> Optional[dict]:
+def _format_extraction_result(result: Optional[dict], error: Optional[str], return_error: bool):
+    if return_error:
+        return result, error
+    return result
+
+
+def extract_eps_from_pdf(pdf_bytes: bytes, return_error: bool = False):
     """
     Sends PDF bytes to Gemini and extracts structured EPS data.
     Returns parsed dict or None on failure.
+    If return_error=True, returns (parsed_dict_or_none, error_message_or_none).
     """
     try:
         client = _get_client()
@@ -201,14 +208,16 @@ def extract_eps_from_pdf(pdf_bytes: bytes) -> Optional[dict]:
         parsed = json.loads(raw)
         normalized = _normalize_extraction_payload(parsed)
         if not normalized:
-            logger.warning("Gemini returned unexpected JSON shape: %s", type(parsed).__name__)
-            return None
+            error = f"Gemini returned unexpected JSON shape: {type(parsed).__name__}"
+            logger.warning(error)
+            return _format_extraction_result(None, error, return_error)
 
-        return normalized
+        return _format_extraction_result(normalized, None, return_error)
 
     except Exception as e:
-        logger.warning("Gemini extraction failed: %s", e)
-        return None
+        error = str(e)
+        logger.warning("Gemini extraction failed: %s", error)
+        return _format_extraction_result(None, error, return_error)
 
 
 if __name__ == "__main__":

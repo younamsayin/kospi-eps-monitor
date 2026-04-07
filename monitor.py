@@ -302,8 +302,9 @@ def _extract_and_save_report(conn, report: dict, pdf_bytes: bytes, kospi200_tick
         report["local_pdf_path"] = archived_path
         logger.info("    Saved PDF: %s", archived_path)
 
-    extracted = extract_eps_from_pdf(pdf_bytes)
+    extracted, gemini_error = extract_eps_from_pdf(pdf_bytes, return_error=True)
     if not extracted:
+        report["_gemini_error"] = gemini_error
         return "gemini_failed"
 
     _apply_extracted_metadata(report, extracted)
@@ -335,11 +336,22 @@ def _queue_gemini_retry(conn, report: dict, last_error: str):
     )
 
 
+def _should_retry_gemini_failure(error) -> bool:
+    message = (error or "").lower()
+    if "document has no pages" in message or "no pages" in message:
+        return False
+    return True
+
+
 def process_report(conn, report: dict, pdf_bytes: bytes, kospi200_tickers: set) -> str:
     """Extract EPS from a PDF, save to DB, and alert on changes."""
     status = _extract_and_save_report(conn, report, pdf_bytes, kospi200_tickers)
     if status == "gemini_failed":
-        _queue_gemini_retry(conn, report, "Gemini extraction returned no usable data")
+        error = report.get("_gemini_error") or "Gemini extraction returned no usable data"
+        if _should_retry_gemini_failure(error):
+            _queue_gemini_retry(conn, report, error)
+        else:
+            logger.warning("    [!] Gemini extraction failed permanently, not retrying: %s", error)
     return status
 
 
