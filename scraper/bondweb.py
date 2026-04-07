@@ -38,6 +38,7 @@ LIST_PARAMS = {
 logger = logging.getLogger(__name__)
 _DOWNLOAD_FAILURE_SAMPLES = []
 _MAX_DOWNLOAD_FAILURE_SAMPLES = 25
+BONDWEB_DOWNLOAD_RETRY_DELAYS = (3, 5)
 
 
 def _looks_like_asp_runtime_error(response: httpx.Response) -> bool:
@@ -453,7 +454,7 @@ def download_pdf(report_url: str, report: Optional[dict] = None) -> Optional[byt
                         exc,
                     )
                     return None
-                delay = 2 ** attempt
+                delay = BONDWEB_DOWNLOAD_RETRY_DELAYS[attempt]
                 logger.warning(
                     "Bondweb PDF download failed (report_id=%s, gn=%s): %s. Retrying in %ss",
                     number,
