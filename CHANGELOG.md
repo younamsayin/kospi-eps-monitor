@@ -50,6 +50,7 @@
 - Increased Bondweb per-company collection from 5 to 10 reports and expanded title matching for no-space hyphen and bracketed ticker formats
 - Added ingestion event auditing plus `scripts/audit_ingestion.py` to inspect empty EPS rows, Gemini retries, recent failures/skips, and duplicate PDF hashes
 - Added Bondweb subject validation so Gemini-extracted ticker mismatches are skipped instead of being saved under the searched company
+- Added `gemini_extractions` caching so raw Gemini responses, parsed payloads, normalized payloads, models, prompt versions, and extraction errors are stored for future audits and rebuilds
 
 ## [0.1.0] - 2026-04-06
 

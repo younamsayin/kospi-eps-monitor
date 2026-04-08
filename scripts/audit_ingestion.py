@@ -69,6 +69,36 @@ def main():
             "  Empty.",
         )
 
+        print("\nGemini extraction counts")
+        _print_rows(
+            conn.execute(
+                """
+                SELECT status, model, prompt_version, COUNT(*) AS attempts
+                FROM gemini_extractions
+                GROUP BY status, model, prompt_version
+                ORDER BY attempts DESC, status
+                LIMIT ?
+                """,
+                (args.limit,),
+            ).fetchall(),
+            "  No cached Gemini extraction payloads found.",
+        )
+
+        print("\nRecent Gemini extraction failures")
+        _print_rows(
+            conn.execute(
+                """
+                SELECT created_at, status, source, ticker, company, broker, title, error
+                FROM gemini_extractions
+                WHERE status != 'success'
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (args.limit,),
+            ).fetchall(),
+            "  None.",
+        )
+
         print("\nRecent ingestion failures / skips")
         _print_rows(
             conn.execute(

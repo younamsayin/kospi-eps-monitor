@@ -1,5 +1,6 @@
 import argparse
 import hashlib
+import json
 import os
 import re
 import sys
@@ -11,7 +12,14 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from db.models import get_conn, get_kospi200, insert_eps, insert_report, upsert_gemini_retry
+from db.models import (
+    get_conn,
+    get_kospi200,
+    insert_eps,
+    insert_gemini_extraction,
+    insert_report,
+    upsert_gemini_retry,
+)
 
 try:
     sys.stdout.reconfigure(line_buffering=True)
@@ -151,6 +159,37 @@ def _insert_extracted_report(conn, report: dict, pdf_hash: str, extracted: dict,
     return report_id
 
 
+def _json_dumps_or_none(value) -> Optional[str]:
+    if value is None:
+        return None
+    return json.dumps(value, ensure_ascii=False, sort_keys=True)
+
+
+def _record_gemini_extraction(conn, report: dict, status: str, metadata: dict, report_id: Optional[int] = None):
+    insert_gemini_extraction(
+        conn,
+        {
+            "report_id": report_id,
+            "ticker": report.get("ticker"),
+            "company": report.get("company"),
+            "broker": report.get("broker"),
+            "source": report.get("source"),
+            "title": report.get("title"),
+            "report_url": report.get("report_url"),
+            "report_date": report.get("report_date"),
+            "pdf_hash": report.get("pdf_hash"),
+            "local_pdf_path": report.get("local_pdf_path"),
+            "model": metadata.get("model"),
+            "prompt_version": metadata.get("prompt_version"),
+            "status": status,
+            "error": metadata.get("error"),
+            "raw_response": metadata.get("raw_response"),
+            "parsed_payload": _json_dumps_or_none(metadata.get("parsed_payload")),
+            "normalized_payload": _json_dumps_or_none(metadata.get("normalized_payload")),
+        },
+    )
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Reprocess archived report PDFs into analyst_reports and eps_estimates."
@@ -231,12 +270,18 @@ def main():
                 f"[{idx}/{len(files)}] Extracting {report['source']} "
                 f"{report['company']} ({report['ticker']}) — {report['broker']}"
             )
-            extracted, gemini_error = extract_eps_from_pdf(pdf_bytes, return_error=True)
+            extracted, gemini_error, gemini_metadata = extract_eps_from_pdf(
+                pdf_bytes,
+                return_error=True,
+                return_metadata=True,
+            )
             if not extracted:
                 extraction_failed += 1
                 gemini_error = gemini_error or "Gemini extraction returned no usable data during archive reprocess"
                 print(f"    [!] Gemini extraction failed: {gemini_error}")
+                _record_gemini_extraction(conn, report, "gemini_failed", gemini_metadata or {})
                 if not _should_retry_gemini_failure(gemini_error):
+                    conn.commit()
                     print("    Not retrying because Gemini reported a permanent extraction failure.")
                 else:
                     upsert_gemini_retry(
@@ -254,8 +299,11 @@ def main():
                 insert_failed += 1
                 print("    [!] DB insert was ignored.")
                 conn.rollback()
+                _record_gemini_extraction(conn, report, "insert_duplicate", gemini_metadata or {})
+                conn.commit()
                 continue
 
+            _record_gemini_extraction(conn, report, "success", gemini_metadata or {}, report_id)
             conn.commit()
             inserted += 1
             print(f"    Inserted report_id={report_id}")

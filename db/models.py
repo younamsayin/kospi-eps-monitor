@@ -83,6 +83,28 @@ CREATE TABLE IF NOT EXISTS ingestion_events (
     created_at      TEXT DEFAULT (datetime('now'))
 );
 
+CREATE TABLE IF NOT EXISTS gemini_extractions (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    report_id           INTEGER REFERENCES analyst_reports(id),
+    ticker              TEXT,
+    company             TEXT,
+    broker              TEXT,
+    source              TEXT,
+    title               TEXT,
+    report_url          TEXT,
+    report_date         TEXT,
+    pdf_hash            TEXT,
+    local_pdf_path      TEXT,
+    model               TEXT,
+    prompt_version      TEXT,
+    status              TEXT NOT NULL,
+    error               TEXT,
+    raw_response        TEXT,
+    parsed_payload      TEXT,
+    normalized_payload  TEXT,
+    created_at          TEXT DEFAULT (datetime('now'))
+);
+
 CREATE INDEX IF NOT EXISTS idx_eps_ticker_year ON eps_estimates(ticker, fiscal_year);
 CREATE INDEX IF NOT EXISTS idx_reports_ticker   ON analyst_reports(ticker);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_gemini_retries_pdf_hash ON gemini_extraction_retries(pdf_hash);
@@ -90,6 +112,9 @@ CREATE INDEX IF NOT EXISTS idx_gemini_retries_next_retry ON gemini_extraction_re
 CREATE INDEX IF NOT EXISTS idx_ingestion_events_source_status ON ingestion_events(source, status, created_at);
 CREATE INDEX IF NOT EXISTS idx_ingestion_events_report_url ON ingestion_events(report_url);
 CREATE INDEX IF NOT EXISTS idx_ingestion_events_pdf_hash ON ingestion_events(pdf_hash);
+CREATE INDEX IF NOT EXISTS idx_gemini_extractions_pdf_hash ON gemini_extractions(pdf_hash, created_at);
+CREATE INDEX IF NOT EXISTS idx_gemini_extractions_report_url ON gemini_extractions(report_url, created_at);
+CREATE INDEX IF NOT EXISTS idx_gemini_extractions_status ON gemini_extractions(status, created_at);
 """
 
 
@@ -268,6 +293,43 @@ def insert_ingestion_event(conn, event: dict):
             "message": event.get("message"),
         },
     )
+
+
+def insert_gemini_extraction(conn, extraction: dict) -> int:
+    cur = conn.execute(
+        """
+        INSERT INTO gemini_extractions (
+            report_id, ticker, company, broker, source, title, report_url,
+            report_date, pdf_hash, local_pdf_path, model, prompt_version,
+            status, error, raw_response, parsed_payload, normalized_payload
+        )
+        VALUES (
+            :report_id, :ticker, :company, :broker, :source, :title, :report_url,
+            :report_date, :pdf_hash, :local_pdf_path, :model, :prompt_version,
+            :status, :error, :raw_response, :parsed_payload, :normalized_payload
+        )
+        """,
+        {
+            "report_id": extraction.get("report_id"),
+            "ticker": extraction.get("ticker"),
+            "company": extraction.get("company"),
+            "broker": extraction.get("broker"),
+            "source": extraction.get("source"),
+            "title": extraction.get("title"),
+            "report_url": extraction.get("report_url"),
+            "report_date": extraction.get("report_date"),
+            "pdf_hash": extraction.get("pdf_hash"),
+            "local_pdf_path": extraction.get("local_pdf_path"),
+            "model": extraction.get("model"),
+            "prompt_version": extraction.get("prompt_version"),
+            "status": extraction.get("status"),
+            "error": extraction.get("error"),
+            "raw_response": extraction.get("raw_response"),
+            "parsed_payload": extraction.get("parsed_payload"),
+            "normalized_payload": extraction.get("normalized_payload"),
+        },
+    )
+    return cur.lastrowid or 0
 
 
 def upsert_gemini_retry(conn, report: dict, retry_after_minutes: int, last_error: str):

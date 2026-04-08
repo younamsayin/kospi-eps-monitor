@@ -10,6 +10,7 @@ Workflow:
 
 import os
 import hashlib
+import json
 import re
 import time
 import logging
@@ -21,7 +22,7 @@ from db.models import (
     get_conn, init_db, upsert_kospi200, get_kospi200,
     insert_report, insert_eps,
     get_report_by_url, count_eps_estimates_for_report,
-    insert_ingestion_event,
+    insert_ingestion_event, insert_gemini_extraction,
     get_existing_report_urls,
     get_previous_eps_record, get_previous_target_price_record,
     get_latest_prior_report_estimates,
@@ -415,6 +416,50 @@ def _record_ingestion_event(conn, report: dict, stage: str, status: str, message
         )
 
 
+def _json_dumps_or_none(value) -> Optional[str]:
+    if value is None:
+        return None
+    return json.dumps(value, ensure_ascii=False, sort_keys=True)
+
+
+def _build_gemini_extraction_row(report: dict, status: str, report_id: Optional[int] = None) -> dict:
+    metadata = report.get("_gemini_metadata") or {}
+    return {
+        "report_id": report_id,
+        "ticker": report.get("ticker"),
+        "company": report.get("company"),
+        "broker": report.get("broker"),
+        "source": report.get("source"),
+        "title": report.get("title"),
+        "report_url": report.get("report_url"),
+        "report_date": report.get("report_date"),
+        "pdf_hash": report.get("pdf_hash"),
+        "local_pdf_path": report.get("local_pdf_path"),
+        "model": metadata.get("model"),
+        "prompt_version": metadata.get("prompt_version"),
+        "status": status,
+        "error": report.get("_gemini_error") or metadata.get("error"),
+        "raw_response": metadata.get("raw_response"),
+        "parsed_payload": _json_dumps_or_none(metadata.get("parsed_payload")),
+        "normalized_payload": _json_dumps_or_none(metadata.get("normalized_payload")),
+    }
+
+
+def _record_gemini_extraction(conn, report: dict, status: str, report_id: Optional[int] = None):
+    try:
+        insert_gemini_extraction(conn, _build_gemini_extraction_row(report, status, report_id))
+    except sqlite3.OperationalError as exc:
+        if not _is_disk_io_error(exc):
+            raise
+        logger.warning(
+            "[%s] Could not record Gemini extraction status=%s for %s: %s",
+            report.get("source") or "?",
+            status,
+            report.get("pdf_hash") or report.get("report_url") or "?",
+            exc,
+        )
+
+
 def _subjects_match_after_extraction(report: dict, extracted: dict) -> bool:
     if report.get("source") != "bondweb":
         return True
@@ -438,7 +483,12 @@ def refresh_kospi200():
 
 def _extract_report_payload(report: dict, pdf_bytes: bytes, kospi200_tickers: set) -> Tuple[str, Optional[dict]]:
     """Extract EPS from a PDF without touching SQLite."""
-    extracted, gemini_error = extract_eps_from_pdf(pdf_bytes, return_error=True)
+    extracted, gemini_error, gemini_metadata = extract_eps_from_pdf(
+        pdf_bytes,
+        return_error=True,
+        return_metadata=True,
+    )
+    report["_gemini_metadata"] = gemini_metadata
     if not extracted:
         report["_gemini_error"] = gemini_error
         return "gemini_failed", None
@@ -446,6 +496,7 @@ def _extract_report_payload(report: dict, pdf_bytes: bytes, kospi200_tickers: se
     _apply_extracted_metadata(report, extracted)
 
     if not _subjects_match_after_extraction(report, extracted):
+        report["_gemini_error"] = "Gemini extracted a different subject company/ticker"
         report["_subject_mismatch"] = (
             f"intended_ticker={report.get('ticker')} extracted_ticker={extracted.get('ticker')} "
             f"extracted_company={extracted.get('company')}"
@@ -454,6 +505,7 @@ def _extract_report_payload(report: dict, pdf_bytes: bytes, kospi200_tickers: se
 
     # Skip if still no ticker, or not in KOSPI 200
     if not report.get("ticker") or report["ticker"] not in kospi200_tickers:
+        report["_gemini_error"] = "Gemini extracted a non-KOSPI200 or missing ticker"
         return "non_kospi", None
 
     return "ready", extracted
@@ -533,6 +585,7 @@ def _save_extracted_report(conn, report: dict, extracted: dict) -> str:
         existing_report_id = existing_report["id"] if existing_report else None
         existing_estimates = count_eps_estimates_for_report(conn, existing_report_id) if existing_report_id else 0
         conn.rollback()
+        _record_gemini_extraction(conn, report, "insert_duplicate", existing_report_id)
         if existing_report_id and existing_estimates > 0:
             logger.info(
                 "    Duplicate report URL already has %s estimate row(s); treating retry as already saved.",
@@ -545,6 +598,7 @@ def _save_extracted_report(conn, report: dict, extracted: dict) -> str:
         return "insert_duplicate"
 
     # Insert estimates (without sending alerts inline)
+    _record_gemini_extraction(conn, report, "success", report_id)
     new_tp = extracted.get("target_price")
     for est in extracted.get("estimates", []):
         fiscal_year = est.get("fiscal_year")
@@ -670,6 +724,7 @@ def process_due_gemini_retries(conn, kospi200_tickers: set):
             conn.commit()
             logger.info("[Gemini Retry] Saved retry result: %s", label)
         elif status == "gemini_failed":
+            _record_gemini_extraction(conn, report, "gemini_failed")
             error = report.get("_gemini_error") or "Gemini extraction returned no usable data"
             if _should_retry_gemini_failure(error):
                 failed += 1
@@ -691,6 +746,7 @@ def process_due_gemini_retries(conn, kospi200_tickers: set):
                 conn.commit()
                 logger.warning("[Gemini Retry] Permanent extraction failure, removing retry: %s | %s", label, error)
         else:
+            _record_gemini_extraction(conn, report, status)
             skipped += 1
             delete_gemini_retry(conn, retry["id"])
             conn.commit()
@@ -817,6 +873,7 @@ def run_source(conn, source_name: str, reports: list, download_fn, kospi200_tick
             )
             if db_failed:
                 stats["db_failed"] += 1
+                _record_gemini_extraction(conn, report, "db_failed")
                 _record_ingestion_event(conn, report, "db", "db_failed")
                 consecutive_db_failures += 1
                 if consecutive_db_failures >= DB_FAILURE_ABORT_THRESHOLD:
@@ -849,14 +906,17 @@ def run_source(conn, source_name: str, reports: list, download_fn, kospi200_tick
                 wal_checkpoint(conn)
         elif status == "gemini_failed":
             stats["gemini_failed"] += 1
+            _record_gemini_extraction(conn, report, "gemini_failed")
             _record_ingestion_event(conn, report, "gemini", "gemini_failed", report.get("_gemini_error") or "")
             logger.warning("[%s] [%s/%s] Not saved to DB after Gemini step: status=%s | %s", source_name, idx, total_reports, status, label)
         elif status == "subject_mismatch":
             stats["subject_mismatch"] += 1
+            _record_gemini_extraction(conn, report, "subject_mismatch")
             _record_ingestion_event(conn, report, "gemini", "subject_mismatch", report.get("_subject_mismatch") or "")
             logger.warning("[%s] [%s/%s] Not saved to DB after Gemini step: status=%s | %s", source_name, idx, total_reports, status, label)
         elif status == "non_kospi":
             stats["non_kospi"] += 1
+            _record_gemini_extraction(conn, report, "non_kospi")
             _record_ingestion_event(conn, report, "gemini", "non_kospi")
             logger.warning("[%s] [%s/%s] Not saved to DB after Gemini step: status=%s | %s", source_name, idx, total_reports, status, label)
         elif status == "insert_duplicate":

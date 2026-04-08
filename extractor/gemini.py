@@ -18,6 +18,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.1-flash-lite-preview")
+PROMPT_VERSION = "eps_extraction_v1"
 logger = logging.getLogger(__name__)
 
 EXTRACTION_PROMPT = """
@@ -139,18 +140,37 @@ def _normalize_extraction_payload(payload) -> Optional[dict]:
     return payload
 
 
-def _format_extraction_result(result: Optional[dict], error: Optional[str], return_error: bool):
+def _format_extraction_result(
+    result: Optional[dict],
+    error: Optional[str],
+    return_error: bool,
+    return_metadata: bool = False,
+    metadata: Optional[dict] = None,
+):
+    if return_error and return_metadata:
+        return result, error, metadata or {}
+    if return_metadata:
+        return result, metadata or {}
     if return_error:
         return result, error
     return result
 
 
-def extract_eps_from_pdf(pdf_bytes: bytes, return_error: bool = False):
+def extract_eps_from_pdf(pdf_bytes: bytes, return_error: bool = False, return_metadata: bool = False):
     """
     Sends PDF bytes to Gemini and extracts structured EPS data.
     Returns parsed dict or None on failure.
     If return_error=True, returns (parsed_dict_or_none, error_message_or_none).
     """
+    metadata = {
+        "model": MODEL,
+        "prompt_version": PROMPT_VERSION,
+        "raw_response": None,
+        "parsed_payload": None,
+        "normalized_payload": None,
+        "error": None,
+    }
+
     try:
         client = _get_client()
         tmp_path = None
@@ -200,26 +220,31 @@ def extract_eps_from_pdf(pdf_bytes: bytes, return_error: bool = False):
                     logger.warning("Failed to delete uploaded Gemini file %s: %s", uploaded.name, cleanup_exc)
 
         raw = response.text.strip()
+        metadata["raw_response"] = raw
         if raw.startswith("```"):
             raw = raw.split("```")[1]
             if raw.startswith("json"):
                 raw = raw[4:]
 
         parsed = json.loads(raw)
+        metadata["parsed_payload"] = parsed
         normalized = _normalize_extraction_payload(parsed)
         if not normalized:
             error = "Gemini returned multi-company payload; skipping ambiguous extraction"
             if not isinstance(parsed, list):
                 error = f"Gemini returned unexpected JSON shape: {type(parsed).__name__}"
+            metadata["error"] = error
             logger.warning(error)
-            return _format_extraction_result(None, error, return_error)
+            return _format_extraction_result(None, error, return_error, return_metadata, metadata)
 
-        return _format_extraction_result(normalized, None, return_error)
+        metadata["normalized_payload"] = normalized
+        return _format_extraction_result(normalized, None, return_error, return_metadata, metadata)
 
     except Exception as e:
         error = str(e)
+        metadata["error"] = error
         logger.warning("Gemini extraction failed: %s", error)
-        return _format_extraction_result(None, error, return_error)
+        return _format_extraction_result(None, error, return_error, return_metadata, metadata)
 
 
 if __name__ == "__main__":
