@@ -58,7 +58,6 @@ REPORTS_DIR = os.environ.get(
     os.path.join(os.path.dirname(__file__), "reports"),
 )
 logger = logging.getLogger(__name__)
-SKIP_PROGRESS_INTERVAL = max(1, int(os.environ.get("SKIP_PROGRESS_INTERVAL", "25")))
 WAL_CHECKPOINT_INTERVAL = max(1, int(os.environ.get("WAL_CHECKPOINT_INTERVAL", "50")))
 DB_OPERATION_RETRIES = max(1, int(os.environ.get("DB_OPERATION_RETRIES", "3")))
 DB_OPERATION_RETRY_DELAY_SECONDS = float(os.environ.get("DB_OPERATION_RETRY_DELAY_SECONDS", "2"))
@@ -688,22 +687,17 @@ def run_source(conn, source_name: str, reports: list, download_fn, kospi200_tick
         if report["report_url"] in existing_report_urls:
             skipped_existing += 1
             stats["existing_url"] += 1
-            if (
-                skipped_existing == 1
-                or skipped_existing % SKIP_PROGRESS_INTERVAL == 0
-                or idx == total_reports
-            ):
-                _log_progress(
-                    source_name,
-                    idx,
-                    total_reports,
-                    processed,
-                    skipped_existing,
-                    skipped_download,
-                    skipped_duplicate_pdf,
-                    eta,
-                    "Already saved, skipping",
-                )
+            _log_progress(
+                source_name,
+                idx,
+                total_reports,
+                processed,
+                skipped_existing,
+                skipped_download,
+                skipped_duplicate_pdf,
+                eta,
+                "Already saved, skipping",
+            )
             continue
 
         label = _report_label(report)

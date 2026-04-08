@@ -235,9 +235,13 @@ def _title_likely_about_company(title: str, company: str) -> bool:
         title_no_space.startswith(company)
         or f"({company}" in stripped
         or f"[{company}" in stripped
+        or f"] {company}" in stripped
+        or f"]{company}" in stripped
         or f"{company}(" in stripped
+        or f"{company}[" in stripped
         or f"{company}/" in stripped
         or f"{company} -" in stripped
+        or f"{company}-" in stripped
         or f"{company}:" in stripped
     )
 
