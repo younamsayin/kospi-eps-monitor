@@ -78,7 +78,16 @@ def get_conn():
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=30000")
+    conn.execute("PRAGMA synchronous=NORMAL")
     return conn
+
+
+def wal_checkpoint(conn):
+    """Run a passive WAL checkpoint to keep the WAL file from growing unbounded."""
+    try:
+        conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
+    except Exception:
+        pass
 
 
 def init_db():
@@ -131,6 +140,21 @@ def report_exists(conn, report_url: str) -> bool:
         "SELECT 1 FROM analyst_reports WHERE report_url = ?", (report_url,)
     ).fetchone()
     return row is not None
+
+
+def get_report_by_url(conn, report_url: str):
+    return conn.execute(
+        "SELECT * FROM analyst_reports WHERE report_url = ?",
+        (report_url,),
+    ).fetchone()
+
+
+def count_eps_estimates_for_report(conn, report_id: int) -> int:
+    row = conn.execute(
+        "SELECT COUNT(*) AS count FROM eps_estimates WHERE report_id = ?",
+        (report_id,),
+    ).fetchone()
+    return int(row["count"] if row else 0)
 
 
 def get_existing_report_urls(conn) -> set[str]:

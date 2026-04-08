@@ -20,6 +20,7 @@ from dotenv import load_dotenv
 from db.models import (
     get_conn, init_db, upsert_kospi200, get_kospi200,
     insert_report, insert_eps,
+    get_report_by_url, count_eps_estimates_for_report,
     get_existing_report_urls,
     get_previous_eps_record, get_previous_target_price_record,
     get_latest_prior_report_estimates,
@@ -28,6 +29,7 @@ from db.models import (
     get_pending_gemini_retry_hashes,
     upsert_gemini_retry, get_due_gemini_retries,
     delete_gemini_retry, mark_gemini_retry_failed,
+    wal_checkpoint,
 )
 from scraper.krx import fetch_kospi200
 from scraper.naver import fetch_recent_reports as naver_fetch, download_pdf as naver_download
@@ -57,8 +59,10 @@ REPORTS_DIR = os.environ.get(
 )
 logger = logging.getLogger(__name__)
 SKIP_PROGRESS_INTERVAL = max(1, int(os.environ.get("SKIP_PROGRESS_INTERVAL", "25")))
+WAL_CHECKPOINT_INTERVAL = max(1, int(os.environ.get("WAL_CHECKPOINT_INTERVAL", "50")))
 DB_OPERATION_RETRIES = max(1, int(os.environ.get("DB_OPERATION_RETRIES", "3")))
 DB_OPERATION_RETRY_DELAY_SECONDS = float(os.environ.get("DB_OPERATION_RETRY_DELAY_SECONDS", "2"))
+DB_FAILURE_ABORT_THRESHOLD = max(1, int(os.environ.get("DB_FAILURE_ABORT_THRESHOLD", "3")))
 
 
 def _relative_gap(current: float, previous: float) -> float:
@@ -259,6 +263,42 @@ def _load_skip_sets(conn, source_name: str) -> tuple[dict, object]:
     return {"report_urls": set(), "pdf_hashes": set(), "retry_hashes": set()}, conn
 
 
+def _save_extracted_report_with_retry(conn, report: dict, extracted: dict, source_name: str, idx: int, total_reports: int, label: str) -> tuple[str, object, bool]:
+    for attempt in range(DB_OPERATION_RETRIES):
+        conn = _reopen_conn(conn)
+        wal_checkpoint(conn)  # clear stale WAL state before writing
+        try:
+            return _save_extracted_report(conn, report, extracted), conn, False
+        except sqlite3.OperationalError as exc:
+            if not _is_disk_io_error(exc):
+                raise
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            if attempt == DB_OPERATION_RETRIES - 1:
+                logger.exception(
+                    "[%s] [%s/%s] SQLite disk I/O error while saving extracted report after %s attempt(s); archived PDF kept and report skipped for this run: %s",
+                    source_name,
+                    idx,
+                    total_reports,
+                    DB_OPERATION_RETRIES,
+                    label,
+                )
+                return "db_failed", conn, True
+            delay = DB_OPERATION_RETRY_DELAY_SECONDS * (attempt + 1)
+            logger.warning(
+                "[%s] [%s/%s] SQLite disk I/O error while saving extracted report; retrying in %ss with a fresh DB connection: %s",
+                source_name,
+                idx,
+                total_reports,
+                delay,
+                exc,
+            )
+            time.sleep(delay)
+    return "db_failed", conn, True
+
+
 def _empty_source_stats(source_name: str) -> dict:
     return {
         "source": source_name,
@@ -343,80 +383,6 @@ def _apply_extracted_metadata(report: dict, extracted: dict):
         report["report_date"] = extracted["report_date"]
 
 
-def _alert_target_price_change(conn, report: dict, extracted: dict):
-    new_tp = extracted.get("target_price")
-    if not new_tp:
-        return
-
-    prev_tp_row = get_previous_target_price_record(
-        conn,
-        report["ticker"],
-        report["broker"],
-        report["report_date"],
-    )
-    prev_tp = float(prev_tp_row["target_price"]) if prev_tp_row else None
-    if prev_tp and abs(new_tp - prev_tp) / abs(prev_tp) > TP_CHANGE_THRESHOLD:
-        direction = "RAISED" if new_tp > prev_tp else "CUT"
-        logger.info("[TP %s] %s: %s -> %s", direction, report["ticker"], f"{prev_tp:,.0f}", f"{new_tp:,.0f}")
-        send_target_price_change_alert(
-            ticker=report["ticker"],
-            company=report["company"],
-            broker=report["broker"],
-            prev_tp=prev_tp,
-            new_tp=new_tp,
-            prev_report_date=prev_tp_row["report_date"] if prev_tp_row else None,
-            new_report_date=report["report_date"],
-            recommendation=extracted.get("recommendation"),
-            report_url=report["report_url"],
-        )
-
-
-def _insert_report_estimates(conn, report_id: int, report: dict, extracted: dict):
-    new_tp = extracted.get("target_price")
-    for est in extracted.get("estimates", []):
-        fiscal_year = est.get("fiscal_year")
-        new_eps = est.get("fwd_eps")
-
-        if not fiscal_year or new_eps is None:
-            continue
-
-        prev_eps_row = get_previous_eps_record(
-            conn,
-            report["ticker"],
-            fiscal_year,
-            report["broker"],
-            report["report_date"],
-        )
-        prev_eps = float(prev_eps_row["fwd_eps"]) if prev_eps_row else None
-
-        insert_eps(conn, {
-            "report_id": report_id,
-            "ticker": report["ticker"],
-            "broker": report["broker"],
-            "fiscal_year": fiscal_year,
-            "fwd_eps": new_eps,
-            "target_price": new_tp,
-            "recommendation": extracted.get("recommendation"),
-        })
-
-        if prev_eps and abs(new_eps - prev_eps) / abs(prev_eps) > EPS_CHANGE_THRESHOLD:
-            direction = "UPGRADE" if new_eps > prev_eps else "DOWNGRADE"
-            logger.info("[%s] %s %sE: %s -> %s", direction, report["ticker"], fiscal_year, f"{prev_eps:,.0f}", f"{new_eps:,.0f}")
-            send_eps_change_alert(
-                ticker=report["ticker"],
-                company=report["company"],
-                broker=report["broker"],
-                fiscal_year=fiscal_year,
-                prev_eps=prev_eps,
-                new_eps=new_eps,
-                prev_report_date=prev_eps_row["report_date"] if prev_eps_row else None,
-                new_report_date=report["report_date"],
-                target_price=new_tp,
-                recommendation=extracted.get("recommendation"),
-                report_url=report["report_url"],
-            )
-
-
 def refresh_kospi200():
     logger.info("[KRX] Fetching KOSPI 200 constituents...")
     constituents = fetch_kospi200()
@@ -444,19 +410,113 @@ def _extract_report_payload(report: dict, pdf_bytes: bytes, kospi200_tickers: se
     return "ready", extracted
 
 
+def _collect_pending_alerts(conn, report: dict, extracted: dict) -> list:
+    """Collect alert data BEFORE the DB write, but don't send yet."""
+    pending = []
+
+    # Target price alert
+    new_tp = extracted.get("target_price")
+    if new_tp and report.get("ticker") and report.get("broker") and report.get("report_date"):
+        prev_tp_row = get_previous_target_price_record(
+            conn, report["ticker"], report["broker"], report["report_date"],
+        )
+        prev_tp = float(prev_tp_row["target_price"]) if prev_tp_row else None
+        if prev_tp and abs(new_tp - prev_tp) / abs(prev_tp) > TP_CHANGE_THRESHOLD:
+            pending.append(("tp", {
+                "ticker": report["ticker"], "company": report["company"],
+                "broker": report["broker"], "prev_tp": prev_tp, "new_tp": new_tp,
+                "prev_report_date": prev_tp_row["report_date"] if prev_tp_row else None,
+                "new_report_date": report["report_date"],
+                "recommendation": extracted.get("recommendation"),
+                "report_url": report["report_url"],
+            }))
+
+    # EPS alerts (per estimate)
+    for est in extracted.get("estimates", []):
+        fiscal_year = est.get("fiscal_year")
+        new_eps = est.get("fwd_eps")
+        if not fiscal_year or new_eps is None:
+            continue
+        if not (report.get("ticker") and report.get("broker") and report.get("report_date")):
+            continue
+        prev_eps_row = get_previous_eps_record(
+            conn, report["ticker"], fiscal_year, report["broker"], report["report_date"],
+        )
+        prev_eps = float(prev_eps_row["fwd_eps"]) if prev_eps_row else None
+        if prev_eps and abs(new_eps - prev_eps) / abs(prev_eps) > EPS_CHANGE_THRESHOLD:
+            pending.append(("eps", {
+                "ticker": report["ticker"], "company": report["company"],
+                "broker": report["broker"], "fiscal_year": fiscal_year,
+                "prev_eps": prev_eps, "new_eps": new_eps,
+                "prev_report_date": prev_eps_row["report_date"] if prev_eps_row else None,
+                "new_report_date": report["report_date"],
+                "target_price": new_tp,
+                "recommendation": extracted.get("recommendation"),
+                "report_url": report["report_url"],
+            }))
+
+    return pending
+
+
+def _send_pending_alerts(pending_alerts: list):
+    """Send alerts that were collected before DB commit — only call after successful commit."""
+    for alert_type, data in pending_alerts:
+        if alert_type == "tp":
+            direction = "RAISED" if data["new_tp"] > data["prev_tp"] else "CUT"
+            logger.info("[TP %s] %s: %s -> %s", direction, data["ticker"], f"{data['prev_tp']:,.0f}", f"{data['new_tp']:,.0f}")
+            send_target_price_change_alert(**data)
+        elif alert_type == "eps":
+            direction = "UPGRADE" if data["new_eps"] > data["prev_eps"] else "DOWNGRADE"
+            logger.info("[%s] %s %sE: %s -> %s", direction, data["ticker"], data["fiscal_year"], f"{data['prev_eps']:,.0f}", f"{data['new_eps']:,.0f}")
+            send_eps_change_alert(**data)
+
+
 def _save_extracted_report(conn, report: dict, extracted: dict) -> str:
     """Save an already-extracted report to SQLite. Returns a compact status string."""
     extracted["estimates"] = _normalize_estimates(conn, report, extracted)
 
-    _alert_target_price_change(conn, report, extracted)
+    # Collect alerts BEFORE writing, but don't send until commit succeeds
+    pending_alerts = _collect_pending_alerts(conn, report, extracted)
 
     report_id = insert_report(conn, report)
     if not report_id:
-        logger.warning("    [!] Report insert was ignored due to duplicate key, skipping estimates.")
+        existing_report = get_report_by_url(conn, report.get("report_url"))
+        existing_report_id = existing_report["id"] if existing_report else None
+        existing_estimates = count_eps_estimates_for_report(conn, existing_report_id) if existing_report_id else 0
         conn.rollback()
+        if existing_report_id and existing_estimates > 0:
+            logger.info(
+                "    Duplicate report URL already has %s estimate row(s); treating retry as already saved.",
+                existing_estimates,
+            )
+            return "existing_after_retry"
+        logger.warning(
+            "    [!] Report insert was ignored due to duplicate key, but no estimates were found; skipping estimates."
+        )
         return "insert_duplicate"
-    _insert_report_estimates(conn, report_id, report, extracted)
+
+    # Insert estimates (without sending alerts inline)
+    new_tp = extracted.get("target_price")
+    for est in extracted.get("estimates", []):
+        fiscal_year = est.get("fiscal_year")
+        new_eps = est.get("fwd_eps")
+        if not fiscal_year or new_eps is None:
+            continue
+        insert_eps(conn, {
+            "report_id": report_id,
+            "ticker": report["ticker"],
+            "broker": report["broker"],
+            "fiscal_year": fiscal_year,
+            "fwd_eps": new_eps,
+            "target_price": new_tp,
+            "recommendation": extracted.get("recommendation"),
+        })
+
     conn.commit()
+
+    # Only send alerts AFTER successful commit
+    _send_pending_alerts(pending_alerts)
+
     return "saved"
 
 
@@ -612,6 +672,7 @@ def run_source(conn, source_name: str, reports: list, download_fn, kospi200_tick
     skipped_existing = 0
     skipped_download = 0
     skipped_duplicate_pdf = 0
+    consecutive_db_failures = 0
     started_at = time.time()
     skip_sets, conn = _load_skip_sets(conn, source_name)
     existing_report_urls = skip_sets["report_urls"]
@@ -693,37 +754,45 @@ def run_source(conn, source_name: str, reports: list, download_fn, kospi200_tick
             # Do not hold a SQLite connection open across network-bound Gemini work.
             # Reopen immediately before the DB phase so stale WAL/SHM state cannot
             # poison the save path.
-            conn = _reopen_conn(conn)
-            try:
-                status = _save_extracted_report(conn, report, extracted)
-            except sqlite3.OperationalError as exc:
-                if not _is_disk_io_error(exc):
-                    raise
+            status, conn, db_failed = _save_extracted_report_with_retry(
+                conn,
+                report,
+                extracted,
+                source_name,
+                idx,
+                total_reports,
+                label,
+            )
+            if db_failed:
                 stats["db_failed"] += 1
-                try:
-                    conn.rollback()
-                except Exception:
-                    pass
-                logger.exception(
-                    "[%s] [%s/%s] SQLite disk I/O error while saving extracted report; stopping source to avoid wasting Gemini calls: %s",
-                    source_name,
-                    idx,
-                    total_reports,
-                    label,
-                )
-                break
+                consecutive_db_failures += 1
+                if consecutive_db_failures >= DB_FAILURE_ABORT_THRESHOLD:
+                    logger.error(
+                        "[%s] Stopping source after %s consecutive DB save failure(s) to avoid wasting Gemini calls.",
+                        source_name,
+                        consecutive_db_failures,
+                    )
+                    break
+                time.sleep(PROCESS_DELAY_SECONDS)
+                continue
+            consecutive_db_failures = 0
         elif status == "gemini_failed":
+            consecutive_db_failures = 0
             error = report.get("_gemini_error") or "Gemini extraction returned no usable data"
             if _should_retry_gemini_failure(error):
                 conn = _reopen_conn(conn)
                 _queue_gemini_retry(conn, report, error)
                 pending_retry_hashes.add(pdf_hash)
+        else:
+            consecutive_db_failures = 0
         if status == "saved":
             processed += 1
             stats["saved"] += 1
             existing_report_urls.add(report["report_url"])
             existing_pdf_hashes.add(pdf_hash)
             logger.info("[%s] [%s/%s] Saved to DB: %s", source_name, idx, total_reports, label)
+            if processed % WAL_CHECKPOINT_INTERVAL == 0:
+                wal_checkpoint(conn)
         elif status == "gemini_failed":
             stats["gemini_failed"] += 1
             logger.warning("[%s] [%s/%s] Not saved to DB after Gemini step: status=%s | %s", source_name, idx, total_reports, status, label)
@@ -733,6 +802,11 @@ def run_source(conn, source_name: str, reports: list, download_fn, kospi200_tick
         elif status == "insert_duplicate":
             stats["insert_duplicate"] += 1
             logger.warning("[%s] [%s/%s] Not saved to DB after Gemini step: status=%s | %s", source_name, idx, total_reports, status, label)
+        elif status == "existing_after_retry":
+            stats["existing_url"] += 1
+            existing_report_urls.add(report["report_url"])
+            existing_pdf_hashes.add(pdf_hash)
+            logger.info("[%s] [%s/%s] Already present after retry; treating as saved: %s", source_name, idx, total_reports, label)
         else:
             stats["other_not_saved"] += 1
             logger.warning("[%s] [%s/%s] Not saved to DB after Gemini step: status=%s | %s", source_name, idx, total_reports, status, label)
