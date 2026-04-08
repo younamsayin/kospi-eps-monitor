@@ -13,6 +13,7 @@ import hashlib
 import re
 import time
 import logging
+import sqlite3
 from dotenv import load_dotenv
 
 from db.models import (
@@ -53,6 +54,8 @@ REPORTS_DIR = os.environ.get(
 )
 logger = logging.getLogger(__name__)
 SKIP_PROGRESS_INTERVAL = max(1, int(os.environ.get("SKIP_PROGRESS_INTERVAL", "25")))
+DB_OPERATION_RETRIES = max(1, int(os.environ.get("DB_OPERATION_RETRIES", "3")))
+DB_OPERATION_RETRY_DELAY_SECONDS = float(os.environ.get("DB_OPERATION_RETRY_DELAY_SECONDS", "2"))
 
 
 def _relative_gap(current: float, previous: float) -> float:
@@ -208,6 +211,23 @@ def _report_label(report: dict) -> str:
     title = (report.get("title") or "untitled").strip()
     ticker_part = f" ({ticker})" if ticker else ""
     return f"{company}{ticker_part} — {broker} — {report_date} — {title}"
+
+
+def _report_exists_with_retry(conn, report_url: str) -> bool:
+    for attempt in range(DB_OPERATION_RETRIES):
+        try:
+            return report_exists(conn, report_url)
+        except sqlite3.OperationalError as exc:
+            if "disk i/o error" not in str(exc).lower() or attempt == DB_OPERATION_RETRIES - 1:
+                raise
+            delay = DB_OPERATION_RETRY_DELAY_SECONDS * (attempt + 1)
+            logger.warning(
+                "SQLite disk I/O error while checking report URL; retrying in %ss: %s",
+                delay,
+                exc,
+            )
+            time.sleep(delay)
+    return False
 
 
 def _empty_source_stats(source_name: str) -> dict:
@@ -555,7 +575,7 @@ def run_source(conn, source_name: str, reports: list, download_fn, kospi200_tick
         remaining = total_reports - idx + 1
         eta = _format_eta(avg_seconds * remaining) if avg_seconds else "estimating..."
 
-        if report_exists(conn, report["report_url"]):
+        if _report_exists_with_retry(conn, report["report_url"]):
             skipped_existing += 1
             stats["existing_url"] += 1
             if (
@@ -670,19 +690,26 @@ def run_once():
         kospi200_name_map = {c["company"]: c["ticker"] for c in cached_constituents}
 
         retry_stats = process_due_gemini_retries(conn, kospi200_tickers)
+        conn.close()
+        conn = None
 
         # Naver Finance — pre-filtered to KOSPI 200 tickers
         naver_reports = naver_fetch(pages=NAVER_SCRAPE_PAGES, ticker_whitelist=kospi200_tickers)
+        conn = get_conn()
         source_stats.append(run_source(conn, "Naver", naver_reports, naver_download, kospi200_tickers))
+        conn.close()
+        conn = None
 
         # Bondweb — pre-filtered by company name match; remaining get Gemini extraction
         bondweb_reports = bondweb_fetch(pages=BONDWEB_SCRAPE_PAGES, ticker_whitelist=kospi200_name_map)
+        conn = get_conn()
         source_stats.append(run_source(conn, "Bondweb", bondweb_reports, bondweb_download, kospi200_tickers))
 
     finally:
         if source_stats:
             _log_run_summary(source_stats, retry_stats, time.time() - run_started_at)
-        conn.close()
+        if conn is not None:
+            conn.close()
 
 
 def run_gemini_retry_once():
