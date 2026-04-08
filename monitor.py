@@ -225,11 +225,26 @@ def _is_disk_io_error(exc: Exception) -> bool:
     return "disk i/o error" in str(exc).lower()
 
 
-def _reopen_conn(conn):
+def _reopen_conn(conn, source_name: str = "SQLite", context: str = "reopening DB connection"):
     try:
         conn.close()
     except Exception:
         pass
+    for attempt in range(DB_OPERATION_RETRIES):
+        try:
+            return get_conn()
+        except sqlite3.OperationalError as exc:
+            if not _is_disk_io_error(exc) or attempt == DB_OPERATION_RETRIES - 1:
+                raise
+            delay = DB_OPERATION_RETRY_DELAY_SECONDS * (attempt + 1)
+            logger.warning(
+                "[%s] SQLite disk I/O error while %s; retrying in %ss: %s",
+                source_name,
+                context,
+                delay,
+                exc,
+            )
+            time.sleep(delay)
     return get_conn()
 
 
@@ -259,16 +274,16 @@ def _load_skip_sets(conn, source_name: str) -> tuple[dict, object]:
                 delay,
                 exc,
             )
-            conn = _reopen_conn(conn)
+            conn = _reopen_conn(conn, source_name, "opening DB connection for skip-cache retry")
             time.sleep(delay)
     return {"report_urls": set(), "pdf_hashes": set(), "retry_hashes": set()}, conn
 
 
 def _save_extracted_report_with_retry(conn, report: dict, extracted: dict, source_name: str, idx: int, total_reports: int, label: str) -> tuple[str, object, bool]:
     for attempt in range(DB_OPERATION_RETRIES):
-        conn = _reopen_conn(conn)
-        wal_checkpoint(conn)  # clear stale WAL state before writing
         try:
+            conn = _reopen_conn(conn, source_name, "opening DB connection before report save")
+            wal_checkpoint(conn)  # clear stale WAL state before writing
             return _save_extracted_report(conn, report, extracted), conn, False
         except sqlite3.OperationalError as exc:
             if not _is_disk_io_error(exc):
@@ -890,9 +905,31 @@ def run_source(conn, source_name: str, reports: list, download_fn, kospi200_tick
             consecutive_db_failures = 0
             error = report.get("_gemini_error") or "Gemini extraction returned no usable data"
             if _should_retry_gemini_failure(error):
-                conn = _reopen_conn(conn)
-                _queue_gemini_retry(conn, report, error)
-                pending_retry_hashes.add(pdf_hash)
+                try:
+                    conn = _reopen_conn(conn, source_name, "opening DB connection to queue Gemini retry")
+                    _queue_gemini_retry(conn, report, error)
+                    pending_retry_hashes.add(pdf_hash)
+                except sqlite3.OperationalError as exc:
+                    if not _is_disk_io_error(exc):
+                        raise
+                    stats["db_failed"] += 1
+                    consecutive_db_failures += 1
+                    logger.exception(
+                        "[%s] [%s/%s] Could not queue Gemini retry because SQLite could not open; archived PDF kept and source will continue unless DB failures repeat: %s",
+                        source_name,
+                        idx,
+                        total_reports,
+                        label,
+                    )
+                    if consecutive_db_failures >= DB_FAILURE_ABORT_THRESHOLD:
+                        logger.error(
+                            "[%s] Stopping source after %s consecutive DB failure(s).",
+                            source_name,
+                            consecutive_db_failures,
+                        )
+                        break
+                    time.sleep(PROCESS_DELAY_SECONDS)
+                    continue
         else:
             consecutive_db_failures = 0
         if status == "saved":
