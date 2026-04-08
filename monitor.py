@@ -403,22 +403,30 @@ def _apply_extracted_metadata(report: dict, extracted: dict):
         report["report_date"] = extracted["report_date"]
 
 
-def _record_ingestion_event(conn, report: dict, stage: str, status: str, message: str = ""):
+def _build_ingestion_event(report: dict, stage: str, status: str, message: str = "") -> dict:
+    return {
+        "source": report.get("source"),
+        "stage": stage,
+        "status": status,
+        "ticker": report.get("ticker"),
+        "company": report.get("company"),
+        "broker": report.get("broker"),
+        "title": report.get("title"),
+        "report_url": report.get("report_url"),
+        "pdf_hash": report.get("pdf_hash"),
+        "report_date": report.get("report_date"),
+        "local_pdf_path": report.get("local_pdf_path"),
+        "message": message,
+    }
+
+
+def _record_ingestion_event(conn, event_buffer: Optional[list], report: dict, stage: str, status: str, message: str = ""):
+    event = _build_ingestion_event(report, stage, status, message)
+    if event_buffer is not None:
+        event_buffer.append(event)
+        return
     try:
-        insert_ingestion_event(conn, {
-            "source": report.get("source"),
-            "stage": stage,
-            "status": status,
-            "ticker": report.get("ticker"),
-            "company": report.get("company"),
-            "broker": report.get("broker"),
-            "title": report.get("title"),
-            "report_url": report.get("report_url"),
-            "pdf_hash": report.get("pdf_hash"),
-            "report_date": report.get("report_date"),
-            "local_pdf_path": report.get("local_pdf_path"),
-            "message": message,
-        })
+        insert_ingestion_event(conn, event)
     except sqlite3.OperationalError as exc:
         if not _is_disk_io_error(exc):
             raise
@@ -429,6 +437,44 @@ def _record_ingestion_event(conn, report: dict, stage: str, status: str, message
             status,
             exc,
         )
+
+
+def _flush_ingestion_events(conn, event_buffer: list, source_name: str):
+    if not event_buffer:
+        return conn
+    for attempt in range(DB_OPERATION_RETRIES):
+        try:
+            conn = _reopen_conn(conn, source_name, "opening DB connection to flush ingestion events")
+            for event in event_buffer:
+                insert_ingestion_event(conn, event)
+            conn.commit()
+            logger.info("[%s] Recorded %s buffered ingestion event(s).", source_name, len(event_buffer))
+            event_buffer.clear()
+            return conn
+        except sqlite3.OperationalError as exc:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            if not _is_disk_io_error(exc):
+                raise
+            if attempt == DB_OPERATION_RETRIES - 1:
+                logger.warning(
+                    "[%s] Could not flush %s ingestion event(s); continuing without audit rows: %s",
+                    source_name,
+                    len(event_buffer),
+                    exc,
+                )
+                return conn
+            delay = DB_OPERATION_RETRY_DELAY_SECONDS * (attempt + 1)
+            logger.warning(
+                "[%s] SQLite disk I/O error while flushing ingestion events; retrying in %ss: %s",
+                source_name,
+                delay,
+                exc,
+            )
+            time.sleep(delay)
+    return conn
 
 
 def _json_dumps_or_none(value) -> Optional[str]:
@@ -798,6 +844,7 @@ def run_source(conn, source_name: str, reports: list, download_fn, kospi200_tick
     existing_report_urls = skip_sets["report_urls"]
     existing_pdf_hashes = skip_sets["pdf_hashes"]
     pending_retry_hashes = skip_sets["retry_hashes"]
+    ingestion_events = []
 
     for idx, report in enumerate(reports, start=1):
         elapsed = time.time() - started_at
@@ -808,7 +855,7 @@ def run_source(conn, source_name: str, reports: list, download_fn, kospi200_tick
         if report["report_url"] in existing_report_urls:
             skipped_existing += 1
             stats["existing_url"] += 1
-            _record_ingestion_event(conn, report, "skip", "existing_url")
+            _record_ingestion_event(conn, ingestion_events, report, "skip", "existing_url")
             _log_progress(
                 source_name,
                 idx,
@@ -823,7 +870,7 @@ def run_source(conn, source_name: str, reports: list, download_fn, kospi200_tick
             continue
 
         label = _report_label(report)
-        _record_ingestion_event(conn, report, "candidate", "found")
+        _record_ingestion_event(conn, ingestion_events, report, "candidate", "found")
         _log_progress(
             source_name,
             idx,
@@ -844,7 +891,7 @@ def run_source(conn, source_name: str, reports: list, download_fn, kospi200_tick
         if not pdf_bytes:
             skipped_download += 1
             stats["download_failed"] += 1
-            _record_ingestion_event(conn, report, "download", "download_failed")
+            _record_ingestion_event(conn, ingestion_events, report, "download", "download_failed")
             logger.warning("[%s] [%s/%s] Download failed, skipping: %s", source_name, idx, total_reports, label)
             continue
         stats["downloaded"] += 1
@@ -854,13 +901,13 @@ def run_source(conn, source_name: str, reports: list, download_fn, kospi200_tick
             skipped_duplicate_pdf += 1
             stats["duplicate_pdf"] += 1
             report["pdf_hash"] = pdf_hash
-            _record_ingestion_event(conn, report, "skip", "duplicate_pdf")
+            _record_ingestion_event(conn, ingestion_events, report, "skip", "duplicate_pdf")
             logger.warning("[%s] [%s/%s] Duplicate PDF content already saved, skipping: %s", source_name, idx, total_reports, label)
             continue
         if pdf_hash in pending_retry_hashes:
             stats["retry_pending"] += 1
             report["pdf_hash"] = pdf_hash
-            _record_ingestion_event(conn, report, "skip", "retry_pending")
+            _record_ingestion_event(conn, ingestion_events, report, "skip", "retry_pending")
             logger.warning("[%s] [%s/%s] Gemini retry already scheduled for this PDF, skipping until retry time: %s", source_name, idx, total_reports, label)
             continue
         report["pdf_hash"] = pdf_hash
@@ -868,7 +915,7 @@ def run_source(conn, source_name: str, reports: list, download_fn, kospi200_tick
         archived_path = _archive_report_pdf(report, pdf_bytes)
         report["local_pdf_path"] = archived_path
         stats["archived"] += 1
-        _record_ingestion_event(conn, report, "archive", "archived")
+        _record_ingestion_event(conn, ingestion_events, report, "archive", "archived")
         logger.info("[%s] [%s/%s] Archived PDF: %s", source_name, idx, total_reports, archived_path)
         logger.info("[%s] [%s/%s] Sending to Gemini: %s", source_name, idx, total_reports, label)
 
@@ -889,7 +936,7 @@ def run_source(conn, source_name: str, reports: list, download_fn, kospi200_tick
             if db_failed:
                 stats["db_failed"] += 1
                 _record_gemini_extraction(conn, report, "db_failed")
-                _record_ingestion_event(conn, report, "db", "db_failed")
+                _record_ingestion_event(conn, ingestion_events, report, "db", "db_failed")
                 consecutive_db_failures += 1
                 if consecutive_db_failures >= DB_FAILURE_ABORT_THRESHOLD:
                     logger.error(
@@ -937,38 +984,38 @@ def run_source(conn, source_name: str, reports: list, download_fn, kospi200_tick
             stats["saved"] += 1
             existing_report_urls.add(report["report_url"])
             existing_pdf_hashes.add(pdf_hash)
-            _record_ingestion_event(conn, report, "db", "saved")
+            _record_ingestion_event(conn, ingestion_events, report, "db", "saved")
             logger.info("[%s] [%s/%s] Saved to DB: %s", source_name, idx, total_reports, label)
             if processed % WAL_CHECKPOINT_INTERVAL == 0:
                 wal_checkpoint(conn)
         elif status == "gemini_failed":
             stats["gemini_failed"] += 1
             _record_gemini_extraction(conn, report, "gemini_failed")
-            _record_ingestion_event(conn, report, "gemini", "gemini_failed", report.get("_gemini_error") or "")
+            _record_ingestion_event(conn, ingestion_events, report, "gemini", "gemini_failed", report.get("_gemini_error") or "")
             logger.warning("[%s] [%s/%s] Not saved to DB after Gemini step: status=%s | %s", source_name, idx, total_reports, status, label)
         elif status == "subject_mismatch":
             stats["subject_mismatch"] += 1
             _record_gemini_extraction(conn, report, "subject_mismatch")
-            _record_ingestion_event(conn, report, "gemini", "subject_mismatch", report.get("_subject_mismatch") or "")
+            _record_ingestion_event(conn, ingestion_events, report, "gemini", "subject_mismatch", report.get("_subject_mismatch") or "")
             logger.warning("[%s] [%s/%s] Not saved to DB after Gemini step: status=%s | %s", source_name, idx, total_reports, status, label)
         elif status == "non_kospi":
             stats["non_kospi"] += 1
             _record_gemini_extraction(conn, report, "non_kospi")
-            _record_ingestion_event(conn, report, "gemini", "non_kospi")
+            _record_ingestion_event(conn, ingestion_events, report, "gemini", "non_kospi")
             logger.warning("[%s] [%s/%s] Not saved to DB after Gemini step: status=%s | %s", source_name, idx, total_reports, status, label)
         elif status == "insert_duplicate":
             stats["insert_duplicate"] += 1
-            _record_ingestion_event(conn, report, "db", "insert_duplicate")
+            _record_ingestion_event(conn, ingestion_events, report, "db", "insert_duplicate")
             logger.warning("[%s] [%s/%s] Not saved to DB after Gemini step: status=%s | %s", source_name, idx, total_reports, status, label)
         elif status == "existing_after_retry":
             stats["existing_url"] += 1
             existing_report_urls.add(report["report_url"])
             existing_pdf_hashes.add(pdf_hash)
-            _record_ingestion_event(conn, report, "db", "existing_after_retry")
+            _record_ingestion_event(conn, ingestion_events, report, "db", "existing_after_retry")
             logger.info("[%s] [%s/%s] Already present after retry; treating as saved: %s", source_name, idx, total_reports, label)
         else:
             stats["other_not_saved"] += 1
-            _record_ingestion_event(conn, report, "unknown", str(status or "unknown"))
+            _record_ingestion_event(conn, ingestion_events, report, "unknown", str(status or "unknown"))
             logger.warning("[%s] [%s/%s] Not saved to DB after Gemini step: status=%s | %s", source_name, idx, total_reports, status, label)
         time.sleep(PROCESS_DELAY_SECONDS)
 
@@ -986,12 +1033,7 @@ def run_source(conn, source_name: str, reports: list, download_fn, kospi200_tick
     )
     if source_name == "Bondweb" and skipped_download:
         bondweb_log_download_failure_summary()
-    try:
-        conn.commit()
-    except sqlite3.OperationalError as exc:
-        if not _is_disk_io_error(exc):
-            raise
-        logger.warning("[%s] Could not commit ingestion event audit trail: %s", source_name, exc)
+    conn = _flush_ingestion_events(conn, ingestion_events, source_name)
     return stats, conn
 
 
