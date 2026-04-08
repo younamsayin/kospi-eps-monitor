@@ -213,21 +213,34 @@ def _report_label(report: dict) -> str:
     return f"{company}{ticker_part} — {broker} — {report_date} — {title}"
 
 
-def _report_exists_with_retry(conn, report_url: str) -> bool:
+def _is_disk_io_error(exc: Exception) -> bool:
+    return "disk i/o error" in str(exc).lower()
+
+
+def _reopen_conn(conn):
+    try:
+        conn.close()
+    except Exception:
+        pass
+    return get_conn()
+
+
+def _report_exists_with_retry(conn, report_url: str) -> tuple[bool, object]:
     for attempt in range(DB_OPERATION_RETRIES):
         try:
-            return report_exists(conn, report_url)
+            return report_exists(conn, report_url), conn
         except sqlite3.OperationalError as exc:
-            if "disk i/o error" not in str(exc).lower() or attempt == DB_OPERATION_RETRIES - 1:
+            if not _is_disk_io_error(exc) or attempt == DB_OPERATION_RETRIES - 1:
                 raise
             delay = DB_OPERATION_RETRY_DELAY_SECONDS * (attempt + 1)
             logger.warning(
-                "SQLite disk I/O error while checking report URL; retrying in %ss: %s",
+                "SQLite disk I/O error while checking report URL; reopening DB connection and retrying in %ss: %s",
                 delay,
                 exc,
             )
+            conn = _reopen_conn(conn)
             time.sleep(delay)
-    return False
+    return False, conn
 
 
 def _empty_source_stats(source_name: str) -> dict:
@@ -575,7 +588,8 @@ def run_source(conn, source_name: str, reports: list, download_fn, kospi200_tick
         remaining = total_reports - idx + 1
         eta = _format_eta(avg_seconds * remaining) if avg_seconds else "estimating..."
 
-        if _report_exists_with_retry(conn, report["report_url"]):
+        exists, conn = _report_exists_with_retry(conn, report["report_url"])
+        if exists:
             skipped_existing += 1
             stats["existing_url"] += 1
             if (
@@ -672,7 +686,7 @@ def run_source(conn, source_name: str, reports: list, download_fn, kospi200_tick
     )
     if source_name == "Bondweb" and skipped_download:
         bondweb_log_download_failure_summary()
-    return stats
+    return stats, conn
 
 
 def run_once():
@@ -696,14 +710,16 @@ def run_once():
         # Naver Finance — pre-filtered to KOSPI 200 tickers
         naver_reports = naver_fetch(pages=NAVER_SCRAPE_PAGES, ticker_whitelist=kospi200_tickers)
         conn = get_conn()
-        source_stats.append(run_source(conn, "Naver", naver_reports, naver_download, kospi200_tickers))
+        stats, conn = run_source(conn, "Naver", naver_reports, naver_download, kospi200_tickers)
+        source_stats.append(stats)
         conn.close()
         conn = None
 
         # Bondweb — pre-filtered by company name match; remaining get Gemini extraction
         bondweb_reports = bondweb_fetch(pages=BONDWEB_SCRAPE_PAGES, ticker_whitelist=kospi200_name_map)
         conn = get_conn()
-        source_stats.append(run_source(conn, "Bondweb", bondweb_reports, bondweb_download, kospi200_tickers))
+        stats, conn = run_source(conn, "Bondweb", bondweb_reports, bondweb_download, kospi200_tickers)
+        source_stats.append(stats)
 
     finally:
         if source_stats:

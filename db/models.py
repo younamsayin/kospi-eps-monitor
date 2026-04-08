@@ -5,7 +5,8 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-DB_PATH = os.environ.get("DB_PATH", "kospi_eps.db")
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DB_PATH = os.environ.get("DB_PATH", os.path.join(PROJECT_ROOT, "kospi_eps.db"))
 
 DDL = """
 CREATE TABLE IF NOT EXISTS kospi200 (
@@ -71,9 +72,10 @@ CREATE INDEX IF NOT EXISTS idx_gemini_retries_next_retry ON gemini_extraction_re
 
 
 def get_conn():
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=30)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=30000")
     return conn
 
 
