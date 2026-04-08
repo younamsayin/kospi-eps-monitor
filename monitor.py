@@ -14,15 +14,18 @@ import re
 import time
 import logging
 import sqlite3
+from typing import Optional, Tuple
 from dotenv import load_dotenv
 
 from db.models import (
     get_conn, init_db, upsert_kospi200, get_kospi200,
-    report_exists, insert_report, insert_eps,
+    insert_report, insert_eps,
+    get_existing_report_urls,
     get_previous_eps_record, get_previous_target_price_record,
     get_latest_prior_report_estimates,
     report_exists_by_pdf_hash,
-    gemini_retry_exists_by_pdf_hash,
+    get_existing_pdf_hashes,
+    get_pending_gemini_retry_hashes,
     upsert_gemini_retry, get_due_gemini_retries,
     delete_gemini_retry, mark_gemini_retry_failed,
 )
@@ -225,22 +228,35 @@ def _reopen_conn(conn):
     return get_conn()
 
 
-def _report_exists_with_retry(conn, report_url: str) -> tuple[bool, object]:
+def _load_skip_sets(conn, source_name: str) -> tuple[dict, object]:
     for attempt in range(DB_OPERATION_RETRIES):
         try:
-            return report_exists(conn, report_url), conn
+            skip_sets = {
+                "report_urls": get_existing_report_urls(conn),
+                "pdf_hashes": get_existing_pdf_hashes(conn),
+                "retry_hashes": get_pending_gemini_retry_hashes(conn),
+            }
+            logger.info(
+                "[%s] Loaded skip cache: urls=%s pdf_hashes=%s retry_hashes=%s",
+                source_name,
+                len(skip_sets["report_urls"]),
+                len(skip_sets["pdf_hashes"]),
+                len(skip_sets["retry_hashes"]),
+            )
+            return skip_sets, conn
         except sqlite3.OperationalError as exc:
             if not _is_disk_io_error(exc) or attempt == DB_OPERATION_RETRIES - 1:
                 raise
             delay = DB_OPERATION_RETRY_DELAY_SECONDS * (attempt + 1)
             logger.warning(
-                "SQLite disk I/O error while checking report URL; reopening DB connection and retrying in %ss: %s",
+                "[%s] SQLite disk I/O error while loading skip cache; reopening DB connection and retrying in %ss: %s",
+                source_name,
                 delay,
                 exc,
             )
             conn = _reopen_conn(conn)
             time.sleep(delay)
-    return False, conn
+    return {"report_urls": set(), "pdf_hashes": set(), "retry_hashes": set()}, conn
 
 
 def _empty_source_stats(source_name: str) -> dict:
@@ -255,6 +271,7 @@ def _empty_source_stats(source_name: str) -> dict:
         "download_failed": 0,
         "retry_pending": 0,
         "gemini_failed": 0,
+        "db_failed": 0,
         "non_kospi": 0,
         "insert_duplicate": 0,
         "other_not_saved": 0,
@@ -275,7 +292,7 @@ def _log_run_summary(source_stats: list[dict], retry_stats: dict, elapsed_second
     for stats in source_stats:
         logger.info(
             "[Run Summary] %s: scanned=%s downloaded=%s archived=%s saved=%s "
-            "existing_url=%s duplicate_pdf=%s download_fail=%s gemini_fail=%s "
+            "existing_url=%s duplicate_pdf=%s download_fail=%s gemini_fail=%s db_fail=%s "
             "retry_pending=%s non_kospi=%s insert_duplicate=%s other_not_saved=%s elapsed=%s",
             stats["source"],
             stats["scanned"],
@@ -286,6 +303,7 @@ def _log_run_summary(source_stats: list[dict], retry_stats: dict, elapsed_second
             stats["duplicate_pdf"],
             stats["download_failed"],
             stats["gemini_failed"],
+            stats["db_failed"],
             stats["retry_pending"],
             stats["non_kospi"],
             stats["insert_duplicate"],
@@ -295,7 +313,7 @@ def _log_run_summary(source_stats: list[dict], retry_stats: dict, elapsed_second
 
     logger.info(
         "[Run Summary] Total source reports: scanned=%s downloaded=%s archived=%s saved=%s "
-        "existing_url=%s duplicate_pdf=%s download_fail=%s gemini_fail=%s retry_pending=%s",
+        "existing_url=%s duplicate_pdf=%s download_fail=%s gemini_fail=%s db_fail=%s retry_pending=%s",
         totals["scanned"],
         totals["downloaded"],
         totals["archived"],
@@ -304,6 +322,7 @@ def _log_run_summary(source_stats: list[dict], retry_stats: dict, elapsed_second
         totals["duplicate_pdf"],
         totals["download_failed"],
         totals["gemini_failed"],
+        totals["db_failed"],
         totals["retry_pending"],
     )
     logger.info(
@@ -409,26 +428,24 @@ def refresh_kospi200():
     return constituents
 
 
-def _extract_and_save_report(conn, report: dict, pdf_bytes: bytes, kospi200_tickers: set) -> str:
-    """Extract EPS from a PDF and save to DB. Returns a compact status string."""
-
-    archived_path = report.get("local_pdf_path")
-    if not archived_path:
-        archived_path = _archive_report_pdf(report, pdf_bytes)
-        report["local_pdf_path"] = archived_path
-        logger.info("    Saved PDF: %s", archived_path)
-
+def _extract_report_payload(report: dict, pdf_bytes: bytes, kospi200_tickers: set) -> Tuple[str, Optional[dict]]:
+    """Extract EPS from a PDF without touching SQLite."""
     extracted, gemini_error = extract_eps_from_pdf(pdf_bytes, return_error=True)
     if not extracted:
         report["_gemini_error"] = gemini_error
-        return "gemini_failed"
+        return "gemini_failed", None
 
     _apply_extracted_metadata(report, extracted)
 
     # Skip if still no ticker, or not in KOSPI 200
     if not report.get("ticker") or report["ticker"] not in kospi200_tickers:
-        return "non_kospi"
+        return "non_kospi", None
 
+    return "ready", extracted
+
+
+def _save_extracted_report(conn, report: dict, extracted: dict) -> str:
+    """Save an already-extracted report to SQLite. Returns a compact status string."""
     extracted["estimates"] = _normalize_estimates(conn, report, extracted)
 
     _alert_target_price_change(conn, report, extracted)
@@ -441,6 +458,21 @@ def _extract_and_save_report(conn, report: dict, pdf_bytes: bytes, kospi200_tick
     _insert_report_estimates(conn, report_id, report, extracted)
     conn.commit()
     return "saved"
+
+
+def _extract_and_save_report(conn, report: dict, pdf_bytes: bytes, kospi200_tickers: set) -> str:
+    """Extract EPS from a PDF and save to DB. Returns a compact status string."""
+
+    archived_path = report.get("local_pdf_path")
+    if not archived_path:
+        archived_path = _archive_report_pdf(report, pdf_bytes)
+        report["local_pdf_path"] = archived_path
+        logger.info("    Saved PDF: %s", archived_path)
+
+    status, extracted = _extract_report_payload(report, pdf_bytes, kospi200_tickers)
+    if status != "ready":
+        return status
+    return _save_extracted_report(conn, report, extracted)
 
 
 def _queue_gemini_retry(conn, report: dict, last_error: str):
@@ -581,6 +613,10 @@ def run_source(conn, source_name: str, reports: list, download_fn, kospi200_tick
     skipped_download = 0
     skipped_duplicate_pdf = 0
     started_at = time.time()
+    skip_sets, conn = _load_skip_sets(conn, source_name)
+    existing_report_urls = skip_sets["report_urls"]
+    existing_pdf_hashes = skip_sets["pdf_hashes"]
+    pending_retry_hashes = skip_sets["retry_hashes"]
 
     for idx, report in enumerate(reports, start=1):
         elapsed = time.time() - started_at
@@ -588,8 +624,7 @@ def run_source(conn, source_name: str, reports: list, download_fn, kospi200_tick
         remaining = total_reports - idx + 1
         eta = _format_eta(avg_seconds * remaining) if avg_seconds else "estimating..."
 
-        exists, conn = _report_exists_with_retry(conn, report["report_url"])
-        if exists:
+        if report["report_url"] in existing_report_urls:
             skipped_existing += 1
             stats["existing_url"] += 1
             if (
@@ -636,12 +671,12 @@ def run_source(conn, source_name: str, reports: list, download_fn, kospi200_tick
         stats["downloaded"] += 1
 
         pdf_hash = hashlib.sha256(pdf_bytes).hexdigest()
-        if report_exists_by_pdf_hash(conn, pdf_hash):
+        if pdf_hash in existing_pdf_hashes:
             skipped_duplicate_pdf += 1
             stats["duplicate_pdf"] += 1
             logger.warning("[%s] [%s/%s] Duplicate PDF content already saved, skipping: %s", source_name, idx, total_reports, label)
             continue
-        if gemini_retry_exists_by_pdf_hash(conn, pdf_hash):
+        if pdf_hash in pending_retry_hashes:
             stats["retry_pending"] += 1
             logger.warning("[%s] [%s/%s] Gemini retry already scheduled for this PDF, skipping until retry time: %s", source_name, idx, total_reports, label)
             continue
@@ -653,10 +688,41 @@ def run_source(conn, source_name: str, reports: list, download_fn, kospi200_tick
         logger.info("[%s] [%s/%s] Archived PDF: %s", source_name, idx, total_reports, archived_path)
         logger.info("[%s] [%s/%s] Sending to Gemini: %s", source_name, idx, total_reports, label)
 
-        status = process_report(conn, report, pdf_bytes, kospi200_tickers)
+        status, extracted = _extract_report_payload(report, pdf_bytes, kospi200_tickers)
+        if status == "ready":
+            # Do not hold a SQLite connection open across network-bound Gemini work.
+            # Reopen immediately before the DB phase so stale WAL/SHM state cannot
+            # poison the save path.
+            conn = _reopen_conn(conn)
+            try:
+                status = _save_extracted_report(conn, report, extracted)
+            except sqlite3.OperationalError as exc:
+                if not _is_disk_io_error(exc):
+                    raise
+                stats["db_failed"] += 1
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                logger.exception(
+                    "[%s] [%s/%s] SQLite disk I/O error while saving extracted report; stopping source to avoid wasting Gemini calls: %s",
+                    source_name,
+                    idx,
+                    total_reports,
+                    label,
+                )
+                break
+        elif status == "gemini_failed":
+            error = report.get("_gemini_error") or "Gemini extraction returned no usable data"
+            if _should_retry_gemini_failure(error):
+                conn = _reopen_conn(conn)
+                _queue_gemini_retry(conn, report, error)
+                pending_retry_hashes.add(pdf_hash)
         if status == "saved":
             processed += 1
             stats["saved"] += 1
+            existing_report_urls.add(report["report_url"])
+            existing_pdf_hashes.add(pdf_hash)
             logger.info("[%s] [%s/%s] Saved to DB: %s", source_name, idx, total_reports, label)
         elif status == "gemini_failed":
             stats["gemini_failed"] += 1

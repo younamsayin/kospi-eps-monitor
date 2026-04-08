@@ -7,6 +7,8 @@ load_dotenv()
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DB_PATH = os.environ.get("DB_PATH", os.path.join(PROJECT_ROOT, "kospi_eps.db"))
+if not os.path.isabs(DB_PATH):
+    DB_PATH = os.path.join(PROJECT_ROOT, DB_PATH)
 
 DDL = """
 CREATE TABLE IF NOT EXISTS kospi200 (
@@ -131,6 +133,15 @@ def report_exists(conn, report_url: str) -> bool:
     return row is not None
 
 
+def get_existing_report_urls(conn) -> set[str]:
+    return {
+        row["report_url"]
+        for row in conn.execute(
+            "SELECT report_url FROM analyst_reports WHERE report_url IS NOT NULL AND report_url != ''"
+        ).fetchall()
+    }
+
+
 def report_exists_by_pdf_hash(conn, pdf_hash: str) -> bool:
     row = conn.execute(
         "SELECT 1 FROM analyst_reports WHERE pdf_hash = ?",
@@ -139,12 +150,30 @@ def report_exists_by_pdf_hash(conn, pdf_hash: str) -> bool:
     return row is not None
 
 
+def get_existing_pdf_hashes(conn) -> set[str]:
+    return {
+        row["pdf_hash"]
+        for row in conn.execute(
+            "SELECT pdf_hash FROM analyst_reports WHERE pdf_hash IS NOT NULL AND pdf_hash != ''"
+        ).fetchall()
+    }
+
+
 def gemini_retry_exists_by_pdf_hash(conn, pdf_hash: str) -> bool:
     row = conn.execute(
         "SELECT 1 FROM gemini_extraction_retries WHERE pdf_hash = ?",
         (pdf_hash,),
     ).fetchone()
     return row is not None
+
+
+def get_pending_gemini_retry_hashes(conn) -> set[str]:
+    return {
+        row["pdf_hash"]
+        for row in conn.execute(
+            "SELECT pdf_hash FROM gemini_extraction_retries WHERE pdf_hash IS NOT NULL AND pdf_hash != ''"
+        ).fetchall()
+    }
 
 
 def insert_report(conn, report: dict) -> int:
