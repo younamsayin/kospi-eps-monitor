@@ -15,6 +15,7 @@ import re
 import time
 import logging
 import sqlite3
+from datetime import datetime
 from typing import Optional, Tuple
 from dotenv import load_dotenv
 
@@ -58,6 +59,10 @@ GEMINI_RETRY_LIMIT = int(os.environ.get("GEMINI_RETRY_LIMIT", "25"))
 REPORTS_DIR = os.environ.get(
     "REPORTS_DIR",
     os.path.join(os.path.dirname(__file__), "reports"),
+)
+INGESTION_LOGS_DIR = os.environ.get(
+    "INGESTION_LOGS_DIR",
+    os.path.join(os.path.dirname(__file__), "logs"),
 )
 logger = logging.getLogger(__name__)
 WAL_CHECKPOINT_INTERVAL = max(1, int(os.environ.get("WAL_CHECKPOINT_INTERVAL", "50")))
@@ -405,6 +410,7 @@ def _apply_extracted_metadata(report: dict, extracted: dict):
 
 def _build_ingestion_event(report: dict, stage: str, status: str, message: str = "") -> dict:
     return {
+        "created_at": datetime.now().isoformat(timespec="seconds"),
         "source": report.get("source"),
         "stage": stage,
         "status": status,
@@ -420,8 +426,21 @@ def _build_ingestion_event(report: dict, stage: str, status: str, message: str =
     }
 
 
+def _append_ingestion_jsonl(event: dict):
+    """Best-effort crash breadcrumb. SQLite remains the queryable audit store."""
+    try:
+        os.makedirs(INGESTION_LOGS_DIR, exist_ok=True)
+        log_date = datetime.now().date().isoformat()
+        path = os.path.join(INGESTION_LOGS_DIR, f"ingestion-events-{log_date}.jsonl")
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(event, ensure_ascii=False, sort_keys=True) + "\n")
+    except Exception as exc:
+        logger.warning("Could not append ingestion JSONL event stage=%s status=%s: %s", event.get("stage"), event.get("status"), exc)
+
+
 def _record_ingestion_event(conn, event_buffer: Optional[list], report: dict, stage: str, status: str, message: str = ""):
     event = _build_ingestion_event(report, stage, status, message)
+    _append_ingestion_jsonl(event)
     if event_buffer is not None:
         event_buffer.append(event)
         return
@@ -917,9 +936,12 @@ def run_source(conn, source_name: str, reports: list, download_fn, kospi200_tick
         stats["archived"] += 1
         _record_ingestion_event(conn, ingestion_events, report, "archive", "archived")
         logger.info("[%s] [%s/%s] Archived PDF: %s", source_name, idx, total_reports, archived_path)
+        _record_ingestion_event(conn, ingestion_events, report, "gemini", "started")
         logger.info("[%s] [%s/%s] Sending to Gemini: %s", source_name, idx, total_reports, label)
 
         status, extracted = _extract_report_payload(report, pdf_bytes, kospi200_tickers)
+        if status == "ready":
+            _record_ingestion_event(conn, ingestion_events, report, "gemini", "succeeded")
         if status == "ready":
             # Do not hold a SQLite connection open across network-bound Gemini work.
             # Reopen immediately before the DB phase so stale WAL/SHM state cannot
@@ -956,11 +978,21 @@ def run_source(conn, source_name: str, reports: list, download_fn, kospi200_tick
                     conn = _reopen_conn(conn, source_name, "opening DB connection to queue Gemini retry")
                     _queue_gemini_retry(conn, report, error)
                     pending_retry_hashes.add(pdf_hash)
+                    _record_ingestion_event(conn, ingestion_events, report, "gemini", "retry_queued", error)
+                    logger.warning(
+                        "[%s] [%s/%s] Gemini failed retryable; retry queued: %s | %s",
+                        source_name,
+                        idx,
+                        total_reports,
+                        error,
+                        label,
+                    )
                 except sqlite3.OperationalError as exc:
                     if not _is_disk_io_error(exc):
                         raise
                     stats["db_failed"] += 1
                     consecutive_db_failures += 1
+                    _record_ingestion_event(conn, ingestion_events, report, "gemini", "retry_queue_failed", str(exc))
                     logger.exception(
                         "[%s] [%s/%s] Could not queue Gemini retry because SQLite could not open; archived PDF kept and source will continue unless DB failures repeat: %s",
                         source_name,
