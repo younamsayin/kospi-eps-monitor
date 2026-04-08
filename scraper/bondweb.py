@@ -249,7 +249,7 @@ def _title_likely_about_company(title: str, company: str) -> bool:
 def _search_reports_by_companies(
     company_map: dict[str, str],
     pages: int = 1,
-    per_company_limit: int = 5,
+    per_company_limit: int = 10,
 ) -> list:
     reports = []
     today = date.today()

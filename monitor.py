@@ -21,6 +21,7 @@ from db.models import (
     get_conn, init_db, upsert_kospi200, get_kospi200,
     insert_report, insert_eps,
     get_report_by_url, count_eps_estimates_for_report,
+    insert_ingestion_event,
     get_existing_report_urls,
     get_previous_eps_record, get_previous_target_price_record,
     get_latest_prior_report_estimates,
@@ -311,6 +312,7 @@ def _empty_source_stats(source_name: str) -> dict:
         "retry_pending": 0,
         "gemini_failed": 0,
         "db_failed": 0,
+        "subject_mismatch": 0,
         "non_kospi": 0,
         "insert_duplicate": 0,
         "other_not_saved": 0,
@@ -332,7 +334,7 @@ def _log_run_summary(source_stats: list[dict], retry_stats: dict, elapsed_second
         logger.info(
             "[Run Summary] %s: scanned=%s downloaded=%s archived=%s saved=%s "
             "existing_url=%s duplicate_pdf=%s download_fail=%s gemini_fail=%s db_fail=%s "
-            "retry_pending=%s non_kospi=%s insert_duplicate=%s other_not_saved=%s elapsed=%s",
+            "retry_pending=%s subject_mismatch=%s non_kospi=%s insert_duplicate=%s other_not_saved=%s elapsed=%s",
             stats["source"],
             stats["scanned"],
             stats["downloaded"],
@@ -344,6 +346,7 @@ def _log_run_summary(source_stats: list[dict], retry_stats: dict, elapsed_second
             stats["gemini_failed"],
             stats["db_failed"],
             stats["retry_pending"],
+            stats["subject_mismatch"],
             stats["non_kospi"],
             stats["insert_duplicate"],
             stats["other_not_saved"],
@@ -352,7 +355,8 @@ def _log_run_summary(source_stats: list[dict], retry_stats: dict, elapsed_second
 
     logger.info(
         "[Run Summary] Total source reports: scanned=%s downloaded=%s archived=%s saved=%s "
-        "existing_url=%s duplicate_pdf=%s download_fail=%s gemini_fail=%s db_fail=%s retry_pending=%s",
+        "existing_url=%s duplicate_pdf=%s download_fail=%s gemini_fail=%s db_fail=%s "
+        "retry_pending=%s subject_mismatch=%s",
         totals["scanned"],
         totals["downloaded"],
         totals["archived"],
@@ -363,6 +367,7 @@ def _log_run_summary(source_stats: list[dict], retry_stats: dict, elapsed_second
         totals["gemini_failed"],
         totals["db_failed"],
         totals["retry_pending"],
+        totals["subject_mismatch"],
     )
     logger.info(
         "[Run Summary] Gemini retries: due=%s succeeded=%s failed=%s skipped=%s",
@@ -380,6 +385,44 @@ def _apply_extracted_metadata(report: dict, extracted: dict):
         report["company"] = extracted.get("company", "")
     if extracted.get("report_date"):
         report["report_date"] = extracted["report_date"]
+
+
+def _record_ingestion_event(conn, report: dict, stage: str, status: str, message: str = ""):
+    try:
+        insert_ingestion_event(conn, {
+            "source": report.get("source"),
+            "stage": stage,
+            "status": status,
+            "ticker": report.get("ticker"),
+            "company": report.get("company"),
+            "broker": report.get("broker"),
+            "title": report.get("title"),
+            "report_url": report.get("report_url"),
+            "pdf_hash": report.get("pdf_hash"),
+            "report_date": report.get("report_date"),
+            "local_pdf_path": report.get("local_pdf_path"),
+            "message": message,
+        })
+    except sqlite3.OperationalError as exc:
+        if not _is_disk_io_error(exc):
+            raise
+        logger.warning(
+            "[%s] Could not record ingestion event stage=%s status=%s: %s",
+            report.get("source") or "?",
+            stage,
+            status,
+            exc,
+        )
+
+
+def _subjects_match_after_extraction(report: dict, extracted: dict) -> bool:
+    if report.get("source") != "bondweb":
+        return True
+    intended_ticker = str(report.get("ticker") or "").strip().upper()
+    extracted_ticker = str(extracted.get("ticker") or "").strip().upper()
+    if intended_ticker and extracted_ticker and intended_ticker != extracted_ticker:
+        return False
+    return True
 
 
 def refresh_kospi200():
@@ -401,6 +444,13 @@ def _extract_report_payload(report: dict, pdf_bytes: bytes, kospi200_tickers: se
         return "gemini_failed", None
 
     _apply_extracted_metadata(report, extracted)
+
+    if not _subjects_match_after_extraction(report, extracted):
+        report["_subject_mismatch"] = (
+            f"intended_ticker={report.get('ticker')} extracted_ticker={extracted.get('ticker')} "
+            f"extracted_company={extracted.get('company')}"
+        )
+        return "subject_mismatch", None
 
     # Skip if still no ticker, or not in KOSPI 200
     if not report.get("ticker") or report["ticker"] not in kospi200_tickers:
@@ -687,6 +737,7 @@ def run_source(conn, source_name: str, reports: list, download_fn, kospi200_tick
         if report["report_url"] in existing_report_urls:
             skipped_existing += 1
             stats["existing_url"] += 1
+            _record_ingestion_event(conn, report, "skip", "existing_url")
             _log_progress(
                 source_name,
                 idx,
@@ -701,6 +752,7 @@ def run_source(conn, source_name: str, reports: list, download_fn, kospi200_tick
             continue
 
         label = _report_label(report)
+        _record_ingestion_event(conn, report, "candidate", "found")
         _log_progress(
             source_name,
             idx,
@@ -721,6 +773,7 @@ def run_source(conn, source_name: str, reports: list, download_fn, kospi200_tick
         if not pdf_bytes:
             skipped_download += 1
             stats["download_failed"] += 1
+            _record_ingestion_event(conn, report, "download", "download_failed")
             logger.warning("[%s] [%s/%s] Download failed, skipping: %s", source_name, idx, total_reports, label)
             continue
         stats["downloaded"] += 1
@@ -729,10 +782,14 @@ def run_source(conn, source_name: str, reports: list, download_fn, kospi200_tick
         if pdf_hash in existing_pdf_hashes:
             skipped_duplicate_pdf += 1
             stats["duplicate_pdf"] += 1
+            report["pdf_hash"] = pdf_hash
+            _record_ingestion_event(conn, report, "skip", "duplicate_pdf")
             logger.warning("[%s] [%s/%s] Duplicate PDF content already saved, skipping: %s", source_name, idx, total_reports, label)
             continue
         if pdf_hash in pending_retry_hashes:
             stats["retry_pending"] += 1
+            report["pdf_hash"] = pdf_hash
+            _record_ingestion_event(conn, report, "skip", "retry_pending")
             logger.warning("[%s] [%s/%s] Gemini retry already scheduled for this PDF, skipping until retry time: %s", source_name, idx, total_reports, label)
             continue
         report["pdf_hash"] = pdf_hash
@@ -740,6 +797,7 @@ def run_source(conn, source_name: str, reports: list, download_fn, kospi200_tick
         archived_path = _archive_report_pdf(report, pdf_bytes)
         report["local_pdf_path"] = archived_path
         stats["archived"] += 1
+        _record_ingestion_event(conn, report, "archive", "archived")
         logger.info("[%s] [%s/%s] Archived PDF: %s", source_name, idx, total_reports, archived_path)
         logger.info("[%s] [%s/%s] Sending to Gemini: %s", source_name, idx, total_reports, label)
 
@@ -759,6 +817,7 @@ def run_source(conn, source_name: str, reports: list, download_fn, kospi200_tick
             )
             if db_failed:
                 stats["db_failed"] += 1
+                _record_ingestion_event(conn, report, "db", "db_failed")
                 consecutive_db_failures += 1
                 if consecutive_db_failures >= DB_FAILURE_ABORT_THRESHOLD:
                     logger.error(
@@ -784,25 +843,35 @@ def run_source(conn, source_name: str, reports: list, download_fn, kospi200_tick
             stats["saved"] += 1
             existing_report_urls.add(report["report_url"])
             existing_pdf_hashes.add(pdf_hash)
+            _record_ingestion_event(conn, report, "db", "saved")
             logger.info("[%s] [%s/%s] Saved to DB: %s", source_name, idx, total_reports, label)
             if processed % WAL_CHECKPOINT_INTERVAL == 0:
                 wal_checkpoint(conn)
         elif status == "gemini_failed":
             stats["gemini_failed"] += 1
+            _record_ingestion_event(conn, report, "gemini", "gemini_failed", report.get("_gemini_error") or "")
+            logger.warning("[%s] [%s/%s] Not saved to DB after Gemini step: status=%s | %s", source_name, idx, total_reports, status, label)
+        elif status == "subject_mismatch":
+            stats["subject_mismatch"] += 1
+            _record_ingestion_event(conn, report, "gemini", "subject_mismatch", report.get("_subject_mismatch") or "")
             logger.warning("[%s] [%s/%s] Not saved to DB after Gemini step: status=%s | %s", source_name, idx, total_reports, status, label)
         elif status == "non_kospi":
             stats["non_kospi"] += 1
+            _record_ingestion_event(conn, report, "gemini", "non_kospi")
             logger.warning("[%s] [%s/%s] Not saved to DB after Gemini step: status=%s | %s", source_name, idx, total_reports, status, label)
         elif status == "insert_duplicate":
             stats["insert_duplicate"] += 1
+            _record_ingestion_event(conn, report, "db", "insert_duplicate")
             logger.warning("[%s] [%s/%s] Not saved to DB after Gemini step: status=%s | %s", source_name, idx, total_reports, status, label)
         elif status == "existing_after_retry":
             stats["existing_url"] += 1
             existing_report_urls.add(report["report_url"])
             existing_pdf_hashes.add(pdf_hash)
+            _record_ingestion_event(conn, report, "db", "existing_after_retry")
             logger.info("[%s] [%s/%s] Already present after retry; treating as saved: %s", source_name, idx, total_reports, label)
         else:
             stats["other_not_saved"] += 1
+            _record_ingestion_event(conn, report, "unknown", str(status or "unknown"))
             logger.warning("[%s] [%s/%s] Not saved to DB after Gemini step: status=%s | %s", source_name, idx, total_reports, status, label)
         time.sleep(PROCESS_DELAY_SECONDS)
 
@@ -820,6 +889,12 @@ def run_source(conn, source_name: str, reports: list, download_fn, kospi200_tick
     )
     if source_name == "Bondweb" and skipped_download:
         bondweb_log_download_failure_summary()
+    try:
+        conn.commit()
+    except sqlite3.OperationalError as exc:
+        if not _is_disk_io_error(exc):
+            raise
+        logger.warning("[%s] Could not commit ingestion event audit trail: %s", source_name, exc)
     return stats, conn
 
 

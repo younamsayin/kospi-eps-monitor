@@ -66,10 +66,30 @@ CREATE TABLE IF NOT EXISTS gemini_extraction_retries (
     updated_at      TEXT DEFAULT (datetime('now'))
 );
 
+CREATE TABLE IF NOT EXISTS ingestion_events (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    source          TEXT,
+    stage           TEXT NOT NULL,
+    status          TEXT NOT NULL,
+    ticker          TEXT,
+    company         TEXT,
+    broker          TEXT,
+    title           TEXT,
+    report_url      TEXT,
+    pdf_hash        TEXT,
+    report_date     TEXT,
+    local_pdf_path  TEXT,
+    message         TEXT,
+    created_at      TEXT DEFAULT (datetime('now'))
+);
+
 CREATE INDEX IF NOT EXISTS idx_eps_ticker_year ON eps_estimates(ticker, fiscal_year);
 CREATE INDEX IF NOT EXISTS idx_reports_ticker   ON analyst_reports(ticker);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_gemini_retries_pdf_hash ON gemini_extraction_retries(pdf_hash);
 CREATE INDEX IF NOT EXISTS idx_gemini_retries_next_retry ON gemini_extraction_retries(next_retry_at);
+CREATE INDEX IF NOT EXISTS idx_ingestion_events_source_status ON ingestion_events(source, status, created_at);
+CREATE INDEX IF NOT EXISTS idx_ingestion_events_report_url ON ingestion_events(report_url);
+CREATE INDEX IF NOT EXISTS idx_ingestion_events_pdf_hash ON ingestion_events(pdf_hash);
 """
 
 
@@ -218,6 +238,35 @@ def insert_eps(conn, estimate: dict):
         VALUES (:report_id, :ticker, :broker, :fiscal_year, :fwd_eps, :target_price, :recommendation)
         """,
         estimate,
+    )
+
+
+def insert_ingestion_event(conn, event: dict):
+    conn.execute(
+        """
+        INSERT INTO ingestion_events (
+            source, stage, status, ticker, company, broker, title,
+            report_url, pdf_hash, report_date, local_pdf_path, message
+        )
+        VALUES (
+            :source, :stage, :status, :ticker, :company, :broker, :title,
+            :report_url, :pdf_hash, :report_date, :local_pdf_path, :message
+        )
+        """,
+        {
+            "source": event.get("source"),
+            "stage": event.get("stage"),
+            "status": event.get("status"),
+            "ticker": event.get("ticker"),
+            "company": event.get("company"),
+            "broker": event.get("broker"),
+            "title": event.get("title"),
+            "report_url": event.get("report_url"),
+            "pdf_hash": event.get("pdf_hash"),
+            "report_date": event.get("report_date"),
+            "local_pdf_path": event.get("local_pdf_path"),
+            "message": event.get("message"),
+        },
     )
 
 

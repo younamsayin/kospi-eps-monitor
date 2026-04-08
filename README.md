@@ -6,9 +6,12 @@ Monitors KOSPI 200 companies for new analyst reports, extracts forward EPS and t
 
 ```
 Naver Finance / Bondweb → new analyst reports (PDF)
+    → ingestion audit event
     → Gemini API (native PDF understanding)
     → structured EPS data {company, ticker, fiscal_year, fwd_eps, target_price}
+    → validate source subject where needed
     → compare vs previous broker estimate in SQLite
+    → commit report + estimates
     → Telegram alert if EPS or target price changes > threshold
 ```
 
@@ -18,10 +21,12 @@ Naver Finance / Bondweb → new analyst reports (PDF)
 - Scrapes Naver Finance and Bondweb research for new analyst reports
 - Uses Naver company-specific `itemCode` searches by default for monitored tickers, capped to recent results per company
 - Downloads PDFs, archives them locally, and extracts EPS estimates using Gemini
+- Persists ingestion events so skipped, failed, duplicate, and saved candidates are auditable after a run
+- Validates Bondweb candidate reports against Gemini-extracted subject tickers before saving
 - Detects EPS upgrades/downgrades per broker per fiscal year
 - Detects target price raises/cuts per broker
 - Streamlit dashboard with consensus views, recent reports, revision history, and persistent favorite companies
-- Telegram alerts on EPS and target price changes
+- Telegram alerts on EPS and target price changes, sent only after DB commit succeeds
 
 ## Setup
 
@@ -76,6 +81,13 @@ python3 -m streamlit run dashboard.py
 ```
 Then open [http://localhost:8501](http://localhost:8501).
 
+**Audit ingestion health**
+```bash
+python3 scripts/audit_ingestion.py --limit 25
+```
+
+This summarizes reports with no EPS rows, queued Gemini retries, recent ingestion failures/skips, and duplicate PDF hashes.
+
 ## Project structure
 
 ```
@@ -93,8 +105,11 @@ kospi-eps-monitor/
 ├── alerts/
 │   └── telegram.py     # Telegram bot notifications
 ├── scripts/
+│   ├── audit_ingestion.py               # inspect ingestion failures, retry queue, empty EPS rows, and duplicate hashes
 │   ├── backfill_report_archives.py      # backfill local PDF archive files for existing DB rows
 │   ├── cleanup_shifted_fiscal_years.py  # repair high-confidence shifted fiscal-year EPS rows
+│   ├── deduplicate_same_day_reports.py  # remove same ticker/broker/date duplicates while keeping the most complete row
+│   ├── reprocess_archived_reports.py    # rerun archived PDFs through Gemini for Naver and Bondweb
 │   └── reorganize_report_archives.py    # migrate archive folders to company/source/date layout
 ├── reports/             # local archived PDFs (company/source/date/file.pdf)
 ├── requirements.txt
@@ -115,5 +130,7 @@ kospi-eps-monitor/
 - Analyst reports are scraped from Naver Finance research (`finance.naver.com/research`) and Bondweb research center
 - Archived PDFs are stored locally under `reports/company/source/date/file.pdf`
 - Existing DB rows can be backfilled into the archive with `python3 scripts/backfill_report_archives.py`
+- Archived PDFs that never made it into the DB can be reprocessed with `python3 scripts/reprocess_archived_reports.py`
+- Ingestion health can be checked with `python3 scripts/audit_ingestion.py --limit 25`
 - EPS revision detection is per broker — consensus-level revision tracking requires multiple brokers covering the same stock
 - The `.db` file is portable; back it up to preserve history

@@ -41,6 +41,15 @@
 - Added Bondweb failure diagnostics with exact `report_id` / `gn` logging, broker-level failure summaries, and fast-fail handling for deterministic ASP runtime-error records
 - Switched Naver scraping to default to per-company `itemCode` search for monitored tickers while capping the search to the most recent 10 reports from a single page per company
 - Added visible Naver per-ticker progress logging during company-search scraping
+- Added Gemini retry queue handling for archived PDFs with retryable extraction failures, while permanently skipping unreadable and multi-company reports
+- Added archive reprocessing support for both Naver and Bondweb PDFs, including alphanumeric ticker filename parsing
+- Added same-day duplicate report cleanup tooling that keeps the most complete ticker/broker/date report
+- Hardened SQLite WAL handling with aligned dashboard connection settings, `synchronous=NORMAL`, busy timeouts, periodic checkpoints, and DB retry recovery
+- Changed Telegram alert delivery so EPS and target price alerts are sent only after the report and estimates commit successfully
+- Added all-report lifecycle logging and full existing-report skip logging to make terminal progress easier to audit
+- Increased Bondweb per-company collection from 5 to 10 reports and expanded title matching for no-space hyphen and bracketed ticker formats
+- Added ingestion event auditing plus `scripts/audit_ingestion.py` to inspect empty EPS rows, Gemini retries, recent failures/skips, and duplicate PDF hashes
+- Added Bondweb subject validation so Gemini-extracted ticker mismatches are skipped instead of being saved under the searched company
 
 ## [0.1.0] - 2026-04-06
 
