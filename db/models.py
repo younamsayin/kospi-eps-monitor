@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS analyst_reports (
     broker      TEXT,
     source      TEXT,
     title       TEXT,
+    revision_reason TEXT,
     report_url  TEXT UNIQUE,
     pdf_hash    TEXT,
     report_date TEXT,
@@ -145,6 +146,8 @@ def init_db():
             conn.execute("ALTER TABLE analyst_reports ADD COLUMN source TEXT")
         if "pdf_hash" not in columns:
             conn.execute("ALTER TABLE analyst_reports ADD COLUMN pdf_hash TEXT")
+        if "revision_reason" not in columns:
+            conn.execute("ALTER TABLE analyst_reports ADD COLUMN revision_reason TEXT")
         conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_reports_pdf_hash ON analyst_reports(pdf_hash) WHERE pdf_hash IS NOT NULL"
         )
@@ -248,10 +251,24 @@ def get_pending_gemini_retry_hashes(conn) -> set[str]:
 def insert_report(conn, report: dict) -> int:
     cur = conn.execute(
         """
-        INSERT OR IGNORE INTO analyst_reports (ticker, company, broker, source, title, report_url, pdf_hash, report_date)
-        VALUES (:ticker, :company, :broker, :source, :title, :report_url, :pdf_hash, :report_date)
+        INSERT OR IGNORE INTO analyst_reports (
+            ticker, company, broker, source, title, revision_reason, report_url, pdf_hash, report_date
+        )
+        VALUES (
+            :ticker, :company, :broker, :source, :title, :revision_reason, :report_url, :pdf_hash, :report_date
+        )
         """,
-        report,
+        {
+            "ticker": report.get("ticker"),
+            "company": report.get("company"),
+            "broker": report.get("broker"),
+            "source": report.get("source"),
+            "title": report.get("title"),
+            "revision_reason": report.get("revision_reason"),
+            "report_url": report.get("report_url"),
+            "pdf_hash": report.get("pdf_hash"),
+            "report_date": report.get("report_date"),
+        },
     )
     return cur.lastrowid or 0
 

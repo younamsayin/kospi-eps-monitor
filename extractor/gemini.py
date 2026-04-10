@@ -18,7 +18,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.1-flash-lite-preview")
-PROMPT_VERSION = "eps_extraction_v1"
+PROMPT_VERSION = "eps_extraction_v2"
 logger = logging.getLogger(__name__)
 
 EXTRACTION_PROMPT = """
@@ -33,6 +33,7 @@ Extract the following information and return ONLY valid JSON, no markdown, no ex
   "report_date": "publication date written in the report, formatted as YYYY-MM-DD, or null",
   "recommendation": "BUY / HOLD / SELL or Korean equivalent",
   "target_price": <integer, target price in KRW, or null>,
+  "revision_reason": "1-2 short Korean sentences explaining the main reason for the analyst's estimate or target-price change, or null",
   "estimates": [
     {
       "fiscal_year": <integer, e.g. 2025>,
@@ -49,6 +50,7 @@ Rules:
 - Focus on forward estimates (F, E, 전망치) rather than historical actuals when the report distinguishes them
 - report_date should be the actual publication date written in the PDF, not today's date
 - EPS (주당순이익 or EPS) should be in KRW per share
+- revision_reason should summarize the analyst's stated reason for a revision or outlook change in concise Korean
 - If a value is not found, use null
 - fiscal_year must be an integer (e.g. 2025, 2026)
 - Do not shift fiscal years left or right; preserve the fiscal year labels exactly as shown in the report
@@ -130,6 +132,9 @@ def _normalize_extraction_payload(payload) -> Optional[dict]:
     payload["report_date"] = _normalize_report_date(payload.get("report_date"))
     payload.setdefault("recommendation", None)
     payload.setdefault("target_price", None)
+    payload.setdefault("revision_reason", None)
+    if payload["revision_reason"] is not None:
+        payload["revision_reason"] = str(payload["revision_reason"]).strip() or None
 
     estimates = payload.get("estimates")
     if isinstance(estimates, dict):

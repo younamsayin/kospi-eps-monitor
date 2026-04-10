@@ -40,6 +40,7 @@ def send_eps_change_alert(
     target_price: Optional[int],
     recommendation: Optional[str],
     report_url: str,
+    revision_reason: Optional[str] = None,
 ):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         logger.warning("Telegram not configured. Skipping alert for %s.", ticker)
@@ -62,6 +63,8 @@ def send_eps_change_alert(
         lines.append(f"  Target: {target_price:,}원")
     if recommendation:
         lines.append(f"  {recommendation}")
+    if revision_reason:
+        lines.append(f"  Why: {html.escape(revision_reason)}")
     safe_url = html.escape(report_url, quote=True)
     lines.append(f'  <a href="{safe_url}">View Report</a>')
 
@@ -78,6 +81,7 @@ def send_target_price_change_alert(
     new_report_date: Optional[str],
     recommendation: Optional[str],
     report_url: str,
+    revision_reason: Optional[str] = None,
 ):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         return
@@ -97,6 +101,8 @@ def send_target_price_change_alert(
         lines.append(f"  Dates: {prev_report_date or '-'} → {new_report_date or '-'}")
     if recommendation:
         lines.append(f"  {recommendation}")
+    if revision_reason:
+        lines.append(f"  Why: {html.escape(revision_reason)}")
     safe_url = html.escape(report_url, quote=True)
     lines.append(f'  <a href="{safe_url}">View Report</a>')
 

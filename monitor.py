@@ -406,6 +406,8 @@ def _apply_extracted_metadata(report: dict, extracted: dict):
         report["company"] = extracted.get("company", "")
     if extracted.get("report_date"):
         report["report_date"] = extracted["report_date"]
+    if extracted.get("revision_reason"):
+        report["revision_reason"] = extracted["revision_reason"]
 
 
 def _build_ingestion_event(report: dict, stage: str, status: str, message: str = "") -> dict:
@@ -610,6 +612,7 @@ def _collect_pending_alerts(conn, report: dict, extracted: dict) -> list:
                 "new_report_date": report["report_date"],
                 "recommendation": extracted.get("recommendation"),
                 "report_url": report["report_url"],
+                "revision_reason": extracted.get("revision_reason"),
             }))
 
     # EPS alerts (per estimate)
@@ -634,6 +637,7 @@ def _collect_pending_alerts(conn, report: dict, extracted: dict) -> list:
                 "target_price": new_tp,
                 "recommendation": extracted.get("recommendation"),
                 "report_url": report["report_url"],
+                "revision_reason": extracted.get("revision_reason"),
             }))
 
     return pending

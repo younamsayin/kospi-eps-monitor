@@ -128,6 +128,8 @@ def _insert_extracted_report(conn, report: dict, pdf_hash: str, extracted: dict,
         report["broker"] = extracted["broker"]
     if extracted.get("report_date"):
         report["report_date"] = extracted["report_date"]
+    if extracted.get("revision_reason"):
+        report["revision_reason"] = extracted["revision_reason"]
 
     report["pdf_hash"] = pdf_hash
     extracted["estimates"] = normalize_estimates(conn, report, extracted)
