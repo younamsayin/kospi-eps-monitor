@@ -1,6 +1,6 @@
 # KOSPI EPS Monitor
 
-Monitors KOSPI 200 companies for new analyst reports, extracts forward EPS and target prices from PDFs, tracks revisions over time, and sends Telegram alerts when a broker changes estimates beyond configurable thresholds.
+Monitors KOSPI 200 companies for new analyst reports, with optional KOSDAQ 150 expansion via feature flag, extracts forward EPS and target prices from PDFs, tracks revisions over time, and sends Telegram alerts when a broker changes estimates beyond configurable thresholds.
 
 ## How it works
 
@@ -18,6 +18,7 @@ Naver Finance / Bondweb → new analyst reports (PDF)
 ## Features
 
 - Automatically fetches the KOSPI 200 constituent list
+- Optionally expands the monitored universe to include KOSDAQ 150 via `ENABLE_KOSDAQ150=true`
 - Scrapes Naver Finance and Bondweb research for new analyst reports
 - Uses Naver company-specific `itemCode` searches by default for monitored tickers, capped to recent results per company
 - Downloads PDFs, archives them locally, and extracts EPS estimates using Gemini
@@ -46,6 +47,7 @@ Edit `.env`:
 GEMINI_API_KEY=your_gemini_api_key_here
 GEMINI_MODEL=gemini-3.1-flash-lite-preview               # optional, this is the default
 DB_PATH=kospi_eps.db
+ENABLE_KOSDAQ150=false                                # set true to monitor KOSPI 200 + KOSDAQ 150
 TELEGRAM_BOT_TOKEN=your_bot_token_here                   # from @BotFather
 TELEGRAM_CHAT_ID=your_chat_id_here                       # channel or user ID
 EPS_UPGRADE_THRESHOLD=0.02                               # 2% change triggers alert
@@ -96,7 +98,7 @@ kospi-eps-monitor/
 ├── monitor.py          # main loop: scrape → extract → detect → alert
 ├── dashboard.py        # Streamlit dashboard
 ├── scraper/
-│   ├── krx.py          # fetches KOSPI 200 constituent list (Naver Finance)
+│   ├── krx.py          # fetches KOSPI 200 / KOSDAQ 150 constituent lists (Naver Finance)
 │   ├── naver.py        # scrapes analyst reports + downloads PDFs
 │   └── bondweb.py      # scrapes Bondweb analyst reports + downloads PDFs
 ├── extractor/
@@ -127,7 +129,8 @@ kospi-eps-monitor/
 
 ## Notes
 
-- KOSPI 200 list is sourced from Naver Finance (updated quarterly by KRX)
+- KOSPI 200 list is sourced from Naver Finance
+- Optional KOSDAQ 150 expansion is sourced from the PLUS 코스닥150 ETF holdings export, with non-equity rows filtered out
 - Analyst reports are scraped from Naver Finance research (`finance.naver.com/research`) and Bondweb research center
 - Archived PDFs are stored locally under `reports/company/source/date/file.pdf`
 - Existing DB rows can be backfilled into the archive with `python3 scripts/backfill_report_archives.py`

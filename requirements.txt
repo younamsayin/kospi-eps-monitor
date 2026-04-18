@@ -8,3 +8,4 @@ pandas
 plotly
 streamlit
 pytest
+openpyxl

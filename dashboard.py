@@ -14,6 +14,8 @@ if not os.path.isabs(DB_PATH):
     DB_PATH = os.path.join(os.path.dirname(__file__), DB_PATH)
 CONSENSUS_MAX_AGE_DAYS = int(os.environ.get("CONSENSUS_MAX_AGE_DAYS", "90"))
 REVISION_LOOKBACK_DAYS = int(os.environ.get("REVISION_LOOKBACK_DAYS", "365"))
+ENABLE_KOSDAQ150 = os.environ.get("ENABLE_KOSDAQ150", "false").strip().lower() in {"1", "true", "yes", "on"}
+UNIVERSE_LABEL = "KOSPI 200 + KOSDAQ 150" if ENABLE_KOSDAQ150 else "KOSPI 200"
 
 if not st.session_state.get("_db_initialized"):
     init_db()
@@ -71,7 +73,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-st.title("KOSPI 200 — Forward EPS Monitor")
+st.title(f"{UNIVERSE_LABEL} — Forward EPS Monitor")
 
 
 # ── DB helpers ────────────────────────────────────────────────────────────────

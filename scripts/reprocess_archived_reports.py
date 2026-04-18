@@ -14,7 +14,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from db.models import (
     get_conn,
-    get_kospi200,
+    get_active_universe,
     insert_eps,
     insert_gemini_extraction,
     insert_report,
@@ -29,6 +29,7 @@ except AttributeError:
 
 REPORTS_DIR = Path(os.environ.get("REPORTS_DIR", REPO_ROOT / "reports"))
 GEMINI_RETRY_DELAY_MINUTES = int(os.environ.get("GEMINI_RETRY_DELAY_MINUTES", "30"))
+ENABLE_KOSDAQ150 = os.environ.get("ENABLE_KOSDAQ150", "false").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _should_retry_gemini_failure(error: str) -> bool:
@@ -235,7 +236,7 @@ def main():
 
     conn = get_conn()
     try:
-        kospi200_tickers = {row["ticker"] for row in get_kospi200(conn)}
+        active_tickers = {row["ticker"] for row in get_active_universe(conn, include_kosdaq150=ENABLE_KOSDAQ150)}
         inserted = 0
         skipped_existing_hash = 0
         skipped_parse = 0
@@ -249,7 +250,7 @@ def main():
                 skipped_parse += 1
                 print(f"[{idx}/{len(files)}] Could not parse archive path: {path}")
                 continue
-            if kospi200_tickers and report["ticker"] not in kospi200_tickers:
+            if active_tickers and report["ticker"] not in active_tickers:
                 skipped_non_kospi += 1
                 continue
 

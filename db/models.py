@@ -17,6 +17,12 @@ CREATE TABLE IF NOT EXISTS kospi200 (
     updated_at  TEXT DEFAULT (datetime('now'))
 );
 
+CREATE TABLE IF NOT EXISTS kosdaq150 (
+    ticker      TEXT PRIMARY KEY,
+    company     TEXT NOT NULL,
+    updated_at  TEXT DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS analyst_reports (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     ticker      TEXT NOT NULL,
@@ -179,8 +185,37 @@ def upsert_kospi200(tickers: list):
         )
 
 
+def upsert_kosdaq150(tickers: list):
+    with get_conn() as conn:
+        conn.executemany(
+            """
+            INSERT INTO kosdaq150 (ticker, company, updated_at)
+            VALUES (:ticker, :company, datetime('now'))
+            ON CONFLICT(ticker) DO UPDATE
+                SET company = excluded.company, updated_at = excluded.updated_at
+            """,
+            tickers,
+        )
+
+
 def get_kospi200(conn) -> list:
     return conn.execute("SELECT ticker, company FROM kospi200 ORDER BY ticker").fetchall()
+
+
+def get_kosdaq150(conn) -> list:
+    return conn.execute("SELECT ticker, company FROM kosdaq150 ORDER BY ticker").fetchall()
+
+
+def get_active_universe(conn, include_kosdaq150: bool = False) -> list[dict]:
+    rows = [dict(row) for row in get_kospi200(conn)]
+    if include_kosdaq150:
+        seen = {row["ticker"] for row in rows}
+        for row in get_kosdaq150(conn):
+            row_dict = dict(row)
+            if row_dict["ticker"] not in seen:
+                rows.append(row_dict)
+                seen.add(row_dict["ticker"])
+    return rows
 
 
 def report_exists(conn, report_url: str) -> bool:
