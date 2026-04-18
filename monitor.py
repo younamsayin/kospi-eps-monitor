@@ -20,7 +20,7 @@ from typing import Optional, Tuple
 from dotenv import load_dotenv
 
 from db.models import (
-    get_conn, init_db, upsert_kospi200, get_kospi200,
+    get_conn, init_db, upsert_kospi200, upsert_kosdaq150, get_active_universe,
     insert_report, insert_eps,
     get_report_by_url, count_eps_estimates_for_report,
     insert_ingestion_event, insert_gemini_extraction,
@@ -34,7 +34,7 @@ from db.models import (
     delete_gemini_retry, mark_gemini_retry_failed,
     wal_checkpoint,
 )
-from scraper.krx import fetch_kospi200
+from scraper.krx import fetch_kospi200, fetch_kosdaq150
 from scraper.naver import fetch_recent_reports as naver_fetch, download_pdf as naver_download
 from scraper.bondweb import (
     fetch_recent_reports as bondweb_fetch,
@@ -69,6 +69,7 @@ WAL_CHECKPOINT_INTERVAL = max(1, int(os.environ.get("WAL_CHECKPOINT_INTERVAL", "
 DB_OPERATION_RETRIES = max(1, int(os.environ.get("DB_OPERATION_RETRIES", "3")))
 DB_OPERATION_RETRY_DELAY_SECONDS = float(os.environ.get("DB_OPERATION_RETRY_DELAY_SECONDS", "2"))
 DB_FAILURE_ABORT_THRESHOLD = max(1, int(os.environ.get("DB_FAILURE_ABORT_THRESHOLD", "3")))
+ENABLE_KOSDAQ150 = os.environ.get("ENABLE_KOSDAQ150", "false").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _relative_gap(current: float, previous: float) -> float:
@@ -410,21 +411,32 @@ def _apply_extracted_metadata(report: dict, extracted: dict):
         report["revision_reason"] = extracted["revision_reason"]
 
 
+def _json_safe_value(value):
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if hasattr(value, "isoformat"):
+        try:
+            return value.isoformat()
+        except Exception:
+            pass
+    return str(value)
+
+
 def _build_ingestion_event(report: dict, stage: str, status: str, message: str = "") -> dict:
     return {
         "created_at": datetime.now().isoformat(timespec="seconds"),
-        "source": report.get("source"),
+        "source": _json_safe_value(report.get("source")),
         "stage": stage,
         "status": status,
-        "ticker": report.get("ticker"),
-        "company": report.get("company"),
-        "broker": report.get("broker"),
-        "title": report.get("title"),
-        "report_url": report.get("report_url"),
-        "pdf_hash": report.get("pdf_hash"),
-        "report_date": report.get("report_date"),
-        "local_pdf_path": report.get("local_pdf_path"),
-        "message": message,
+        "ticker": _json_safe_value(report.get("ticker")),
+        "company": _json_safe_value(report.get("company")),
+        "broker": _json_safe_value(report.get("broker")),
+        "title": _json_safe_value(report.get("title")),
+        "report_url": _json_safe_value(report.get("report_url")),
+        "pdf_hash": _json_safe_value(report.get("pdf_hash")),
+        "report_date": _json_safe_value(report.get("report_date")),
+        "local_pdf_path": _json_safe_value(report.get("local_pdf_path")),
+        "message": _json_safe_value(message),
     }
 
 
@@ -552,15 +564,26 @@ def _subjects_match_after_extraction(report: dict, extracted: dict) -> bool:
     return True
 
 
-def refresh_kospi200():
+def refresh_primary_universe():
     logger.info("[KRX] Fetching KOSPI 200 constituents...")
-    constituents = fetch_kospi200()
-    if constituents:
-        upsert_kospi200(constituents)
-        logger.info("[KRX] Updated %s constituents.", len(constituents))
+    kospi200 = fetch_kospi200()
+    kosdaq150 = []
+    if ENABLE_KOSDAQ150:
+        logger.info("[KRX] Fetching KOSDAQ 150 constituents...")
+        kosdaq150 = fetch_kosdaq150()
+
+    if kospi200:
+        upsert_kospi200(kospi200)
+        logger.info("[KRX] Updated %s KOSPI 200 constituents.", len(kospi200))
     else:
         logger.warning("[KRX] Warning: no constituents returned — check KRX scraper.")
-    return constituents
+    if ENABLE_KOSDAQ150:
+        if kosdaq150:
+            upsert_kosdaq150(kosdaq150)
+            logger.info("[KRX] Updated %s KOSDAQ 150 constituents.", len(kosdaq150))
+        else:
+            logger.warning("[KRX] Warning: no KOSDAQ 150 constituents returned — check KRX scraper.")
+    return kospi200, kosdaq150
 
 
 def _extract_report_payload(report: dict, pdf_bytes: bytes, kospi200_tickers: set) -> Tuple[str, Optional[dict]]:
@@ -908,9 +931,24 @@ def run_source(conn, source_name: str, reports: list, download_fn, kospi200_tick
         logger.info("[%s] [%s/%s] Downloading PDF...", source_name, idx, total_reports)
 
         try:
-            pdf_bytes = download_fn(report["report_url"], report)
-        except TypeError:
-            pdf_bytes = download_fn(report["report_url"])
+            try:
+                pdf_bytes = download_fn(report["report_url"], report)
+            except TypeError:
+                pdf_bytes = download_fn(report["report_url"])
+        except Exception as exc:
+            skipped_download += 1
+            stats["download_failed"] += 1
+            report["_download_error"] = str(exc)
+            _record_ingestion_event(conn, ingestion_events, report, "download", "download_failed")
+            logger.warning(
+                "[%s] [%s/%s] Download errored, skipping: %s | %s",
+                source_name,
+                idx,
+                total_reports,
+                label,
+                exc,
+            )
+            continue
         if not pdf_bytes:
             skipped_download += 1
             stats["download_failed"] += 1
@@ -1079,30 +1117,36 @@ def run_once():
     source_stats = []
     retry_stats = {"due": 0, "succeeded": 0, "failed": 0, "skipped": 0}
     try:
-        constituents = refresh_kospi200()
-        cached_constituents = constituents if constituents else [dict(r) for r in get_kospi200(conn)]
-        kospi200_tickers = {c["ticker"] for c in cached_constituents}
-        # Build name→ticker map for bondweb company name matching.
-        # Fall back to the cached DB snapshot so a transient refresh failure
-        # does not send every Bondweb report through Gemini.
-        kospi200_name_map = {c["company"]: c["ticker"] for c in cached_constituents}
+        refreshed_kospi200, refreshed_kosdaq150 = refresh_primary_universe()
+        refreshed_universe = list(refreshed_kospi200)
+        if ENABLE_KOSDAQ150:
+            seen_tickers = {row["ticker"] for row in refreshed_universe}
+            for row in refreshed_kosdaq150:
+                if row["ticker"] not in seen_tickers:
+                    refreshed_universe.append(row)
+                    seen_tickers.add(row["ticker"])
+        cached_constituents = (
+            refreshed_universe if refreshed_universe else get_active_universe(conn, include_kosdaq150=ENABLE_KOSDAQ150)
+        )
+        active_tickers = {c["ticker"] for c in cached_constituents}
+        active_name_map = {c["company"]: c["ticker"] for c in cached_constituents}
 
-        retry_stats = process_due_gemini_retries(conn, kospi200_tickers)
+        retry_stats = process_due_gemini_retries(conn, active_tickers)
         conn.close()
         conn = None
 
-        # Naver Finance — pre-filtered to KOSPI 200 tickers
-        naver_reports = naver_fetch(pages=NAVER_SCRAPE_PAGES, ticker_whitelist=kospi200_tickers)
+        # Naver Finance — pre-filtered to the active ticker universe
+        naver_reports = naver_fetch(pages=NAVER_SCRAPE_PAGES, ticker_whitelist=active_tickers)
         conn = get_conn()
-        stats, conn = run_source(conn, "Naver", naver_reports, naver_download, kospi200_tickers)
+        stats, conn = run_source(conn, "Naver", naver_reports, naver_download, active_tickers)
         source_stats.append(stats)
         conn.close()
         conn = None
 
         # Bondweb — pre-filtered by company name match; remaining get Gemini extraction
-        bondweb_reports = bondweb_fetch(pages=BONDWEB_SCRAPE_PAGES, ticker_whitelist=kospi200_name_map)
+        bondweb_reports = bondweb_fetch(pages=BONDWEB_SCRAPE_PAGES, ticker_whitelist=active_name_map)
         conn = get_conn()
-        stats, conn = run_source(conn, "Bondweb", bondweb_reports, bondweb_download, kospi200_tickers)
+        stats, conn = run_source(conn, "Bondweb", bondweb_reports, bondweb_download, active_tickers)
         source_stats.append(stats)
 
     finally:
@@ -1115,8 +1159,8 @@ def run_once():
 def run_gemini_retry_once():
     conn = get_conn()
     try:
-        kospi200_tickers = {row["ticker"] for row in get_kospi200(conn)}
-        process_due_gemini_retries(conn, kospi200_tickers)
+        active_tickers = {row["ticker"] for row in get_active_universe(conn, include_kosdaq150=ENABLE_KOSDAQ150)}
+        process_due_gemini_retries(conn, active_tickers)
     finally:
         conn.close()
 
