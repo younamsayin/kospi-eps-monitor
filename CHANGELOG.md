@@ -1,5 +1,13 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+- Added feature-flagged KOSDAQ 150 monitoring behind `ENABLE_KOSDAQ150`, while keeping default behavior unchanged when the flag is off
+- Switched the optional KOSDAQ 150 constituent source to the PLUS 코스닥150 ETF holdings export and filtered out the non-equity cash row so the active universe expands to 350 names when enabled
+- Updated the monitor, reprocess script, dashboard labeling, and DB helpers to support a combined `KOSPI 200 + KOSDAQ 150` universe on the feature branch
+- Hardened Naver PDF downloading so bad thumbnail/wrapper URLs are rejected, HTTP download errors are skipped instead of crashing the run, and Shinhan-investment report pages resolve via direct `attachmentId` PDF downloads when available
+
 ## [0.2.0] - 2026-04-06
 
 ### Changed
