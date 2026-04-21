@@ -7,6 +7,7 @@
 - Switched the optional KOSDAQ 150 constituent source to the PLUS 코스닥150 ETF holdings export and filtered out the non-equity cash row so the active universe expands to 350 names when enabled
 - Updated the monitor, reprocess script, dashboard labeling, and DB helpers to support a combined `KOSPI 200 + KOSDAQ 150` universe on the feature branch
 - Hardened Naver PDF downloading so bad thumbnail/wrapper URLs are rejected, HTTP download errors are skipped instead of crashing the run, and Shinhan-investment report pages resolve via direct `attachmentId` PDF downloads when available
+- Hardened Gemini retry handling so permanent `INVALID_ARGUMENT` failures are not retried forever, retry rows are dropped after a configurable max-attempt limit, and overlapping retry batches are skipped instead of processing the same row concurrently
 
 ## [0.2.0] - 2026-04-06
 

@@ -15,6 +15,7 @@ import re
 import time
 import logging
 import sqlite3
+import threading
 from datetime import datetime
 from typing import Optional, Tuple
 from dotenv import load_dotenv
@@ -56,6 +57,7 @@ BONDWEB_SCRAPE_PAGES = int(os.environ.get("BONDWEB_SCRAPE_PAGES", os.environ.get
 PROCESS_DELAY_SECONDS = float(os.environ.get("PROCESS_DELAY_SECONDS", "1"))
 GEMINI_RETRY_DELAY_MINUTES = int(os.environ.get("GEMINI_RETRY_DELAY_MINUTES", "30"))
 GEMINI_RETRY_LIMIT = int(os.environ.get("GEMINI_RETRY_LIMIT", "25"))
+GEMINI_RETRY_MAX_ATTEMPTS = max(1, int(os.environ.get("GEMINI_RETRY_MAX_ATTEMPTS", "5")))
 REPORTS_DIR = os.environ.get(
     "REPORTS_DIR",
     os.path.join(os.path.dirname(__file__), "reports"),
@@ -70,6 +72,7 @@ DB_OPERATION_RETRIES = max(1, int(os.environ.get("DB_OPERATION_RETRIES", "3")))
 DB_OPERATION_RETRY_DELAY_SECONDS = float(os.environ.get("DB_OPERATION_RETRY_DELAY_SECONDS", "2"))
 DB_FAILURE_ABORT_THRESHOLD = max(1, int(os.environ.get("DB_FAILURE_ABORT_THRESHOLD", "3")))
 ENABLE_KOSDAQ150 = os.environ.get("ENABLE_KOSDAQ150", "false").strip().lower() in {"1", "true", "yes", "on"}
+GEMINI_RETRY_LOCK = threading.Lock()
 
 
 def _relative_gap(current: float, previous: float) -> float:
@@ -760,6 +763,8 @@ def _should_retry_gemini_failure(error) -> bool:
         return False
     if "multi-company" in message or "ambiguous extraction" in message:
         return False
+    if "invalid_argument" in message or "invalid argument" in message:
+        return False
     return True
 
 
@@ -775,101 +780,140 @@ def process_report(conn, report: dict, pdf_bytes: bytes, kospi200_tickers: set) 
     return status
 
 
-def process_due_gemini_retries(conn, kospi200_tickers: set):
+def process_due_gemini_retries(conn, kospi200_tickers: set, trigger: str = "scheduled"):
+    if not GEMINI_RETRY_LOCK.acquire(blocking=False):
+        logger.info("[Gemini Retry] Skipping %s retry run because another retry batch is already in progress.", trigger)
+        return {"due": 0, "succeeded": 0, "failed": 0, "skipped": 0}
+
     retries = get_due_gemini_retries(conn, GEMINI_RETRY_LIMIT)
     stats = {"due": len(retries), "succeeded": 0, "failed": 0, "skipped": 0}
-    if not retries:
-        return stats
+    try:
+        if not retries:
+            return stats
 
-    logger.info("[Gemini Retry] Processing %s due extraction retry item(s).", len(retries))
-    succeeded = 0
-    failed = 0
-    skipped = 0
+        logger.info("[Gemini Retry] Processing %s due extraction retry item(s).", len(retries))
+        succeeded = 0
+        failed = 0
+        skipped = 0
 
-    for retry in retries:
-        report = {
-            "ticker": retry["ticker"],
-            "company": retry["company"],
-            "broker": retry["broker"],
-            "source": retry["source"],
-            "title": retry["title"],
-            "report_url": retry["report_url"],
-            "report_date": retry["report_date"],
-            "pdf_hash": retry["pdf_hash"],
-            "local_pdf_path": retry["local_pdf_path"],
-        }
-        label = f"{report.get('company')} ({report.get('ticker')}) — {report.get('broker')}"
-        logger.info("[Gemini Retry] Retrying %s | attempt=%s", label, int(retry["attempts"] or 0) + 1)
+        for retry in retries:
+            report = {
+                "ticker": retry["ticker"],
+                "company": retry["company"],
+                "broker": retry["broker"],
+                "source": retry["source"],
+                "title": retry["title"],
+                "report_url": retry["report_url"],
+                "report_date": retry["report_date"],
+                "pdf_hash": retry["pdf_hash"],
+                "local_pdf_path": retry["local_pdf_path"],
+            }
+            current_attempts = int(retry["attempts"] or 0)
+            next_attempt = current_attempts + 1
+            label = f"{report.get('company')} ({report.get('ticker')}) — {report.get('broker')}"
 
-        local_pdf_path = retry["local_pdf_path"]
-        if not local_pdf_path or not os.path.exists(local_pdf_path):
-            skipped += 1
-            mark_gemini_retry_failed(
-                conn,
-                retry["id"],
-                GEMINI_RETRY_DELAY_MINUTES,
-                f"Archived PDF missing: {local_pdf_path}",
-            )
-            conn.commit()
-            logger.warning("[Gemini Retry] Archived PDF missing, retry rescheduled: %s", local_pdf_path)
-            continue
-
-        if report_exists_by_pdf_hash(conn, retry["pdf_hash"]):
-            skipped += 1
-            delete_gemini_retry(conn, retry["id"])
-            conn.commit()
-            logger.info("[Gemini Retry] PDF already inserted, removing retry: %s", label)
-            continue
-
-        with open(local_pdf_path, "rb") as f:
-            pdf_bytes = f.read()
-
-        status = _extract_and_save_report(conn, report, pdf_bytes, kospi200_tickers)
-        if status == "saved":
-            succeeded += 1
-            delete_gemini_retry(conn, retry["id"])
-            conn.commit()
-            logger.info("[Gemini Retry] Saved retry result: %s", label)
-        elif status == "gemini_failed":
-            _record_gemini_extraction(conn, report, "gemini_failed")
-            error = report.get("_gemini_error") or "Gemini extraction returned no usable data"
-            if _should_retry_gemini_failure(error):
-                failed += 1
-                mark_gemini_retry_failed(
-                    conn,
-                    retry["id"],
-                    GEMINI_RETRY_DELAY_MINUTES,
-                    error,
-                )
-                conn.commit()
-                logger.warning(
-                    "[Gemini Retry] Gemini still failed; retry rescheduled in %s minutes: %s",
-                    GEMINI_RETRY_DELAY_MINUTES,
-                    label,
-                )
-            else:
+            if current_attempts >= GEMINI_RETRY_MAX_ATTEMPTS:
                 skipped += 1
                 delete_gemini_retry(conn, retry["id"])
                 conn.commit()
-                logger.warning("[Gemini Retry] Permanent extraction failure, removing retry: %s | %s", label, error)
-        else:
-            _record_gemini_extraction(conn, report, status)
-            skipped += 1
-            delete_gemini_retry(conn, retry["id"])
-            conn.commit()
-            logger.info("[Gemini Retry] Removing retry after status=%s: %s", status, label)
+                logger.warning(
+                    "[Gemini Retry] Removing retry after reaching max attempts (%s): %s",
+                    GEMINI_RETRY_MAX_ATTEMPTS,
+                    label,
+                )
+                continue
 
-        time.sleep(PROCESS_DELAY_SECONDS)
+            logger.info("[Gemini Retry] Retrying %s | attempt=%s", label, next_attempt)
 
-    logger.info(
-        "[Gemini Retry] Done. succeeded=%s failed=%s skipped=%s total=%s",
-        succeeded,
-        failed,
-        skipped,
-        len(retries),
-    )
-    stats.update({"succeeded": succeeded, "failed": failed, "skipped": skipped})
-    return stats
+            local_pdf_path = retry["local_pdf_path"]
+            if not local_pdf_path or not os.path.exists(local_pdf_path):
+                if next_attempt >= GEMINI_RETRY_MAX_ATTEMPTS:
+                    skipped += 1
+                    delete_gemini_retry(conn, retry["id"])
+                    conn.commit()
+                    logger.warning(
+                        "[Gemini Retry] Archived PDF missing and max attempts reached; removing retry: %s",
+                        label,
+                    )
+                else:
+                    failed += 1
+                    mark_gemini_retry_failed(
+                        conn,
+                        retry["id"],
+                        GEMINI_RETRY_DELAY_MINUTES,
+                        f"Archived PDF missing: {local_pdf_path}",
+                    )
+                    conn.commit()
+                    logger.warning("[Gemini Retry] Archived PDF missing, retry rescheduled: %s", local_pdf_path)
+                continue
+
+            if report_exists_by_pdf_hash(conn, retry["pdf_hash"]):
+                skipped += 1
+                delete_gemini_retry(conn, retry["id"])
+                conn.commit()
+                logger.info("[Gemini Retry] PDF already inserted, removing retry: %s", label)
+                continue
+
+            with open(local_pdf_path, "rb") as f:
+                pdf_bytes = f.read()
+
+            status = _extract_and_save_report(conn, report, pdf_bytes, kospi200_tickers)
+            if status == "saved":
+                succeeded += 1
+                delete_gemini_retry(conn, retry["id"])
+                conn.commit()
+                logger.info("[Gemini Retry] Saved retry result: %s", label)
+            elif status == "gemini_failed":
+                _record_gemini_extraction(conn, report, "gemini_failed")
+                error = report.get("_gemini_error") or "Gemini extraction returned no usable data"
+                if not _should_retry_gemini_failure(error):
+                    skipped += 1
+                    delete_gemini_retry(conn, retry["id"])
+                    conn.commit()
+                    logger.warning("[Gemini Retry] Permanent extraction failure, removing retry: %s | %s", label, error)
+                elif next_attempt >= GEMINI_RETRY_MAX_ATTEMPTS:
+                    failed += 1
+                    delete_gemini_retry(conn, retry["id"])
+                    conn.commit()
+                    logger.warning(
+                        "[Gemini Retry] Max retry attempts reached after Gemini failure, removing retry: %s | %s",
+                        label,
+                        error,
+                    )
+                else:
+                    failed += 1
+                    mark_gemini_retry_failed(
+                        conn,
+                        retry["id"],
+                        GEMINI_RETRY_DELAY_MINUTES,
+                        error,
+                    )
+                    conn.commit()
+                    logger.warning(
+                        "[Gemini Retry] Gemini still failed; retry rescheduled in %s minutes: %s",
+                        GEMINI_RETRY_DELAY_MINUTES,
+                        label,
+                    )
+            else:
+                _record_gemini_extraction(conn, report, status)
+                skipped += 1
+                delete_gemini_retry(conn, retry["id"])
+                conn.commit()
+                logger.info("[Gemini Retry] Removing retry after status=%s: %s", status, label)
+
+            time.sleep(PROCESS_DELAY_SECONDS)
+
+        logger.info(
+            "[Gemini Retry] Done. succeeded=%s failed=%s skipped=%s total=%s",
+            succeeded,
+            failed,
+            skipped,
+            len(retries),
+        )
+        stats.update({"succeeded": succeeded, "failed": failed, "skipped": skipped})
+        return stats
+    finally:
+        GEMINI_RETRY_LOCK.release()
 
 
 def run_source(conn, source_name: str, reports: list, download_fn, kospi200_tickers: set):
@@ -1131,7 +1175,7 @@ def run_once():
         active_tickers = {c["ticker"] for c in cached_constituents}
         active_name_map = {c["company"]: c["ticker"] for c in cached_constituents}
 
-        retry_stats = process_due_gemini_retries(conn, active_tickers)
+        retry_stats = process_due_gemini_retries(conn, active_tickers, trigger="run_once")
         conn.close()
         conn = None
 
@@ -1160,7 +1204,7 @@ def run_gemini_retry_once():
     conn = get_conn()
     try:
         active_tickers = {row["ticker"] for row in get_active_universe(conn, include_kosdaq150=ENABLE_KOSDAQ150)}
-        process_due_gemini_retries(conn, active_tickers)
+        process_due_gemini_retries(conn, active_tickers, trigger="scheduled")
     finally:
         conn.close()
 
@@ -1169,8 +1213,14 @@ def run_scheduled(interval_minutes: int = 1440):
     from apscheduler.schedulers.blocking import BlockingScheduler
 
     scheduler = BlockingScheduler()
-    scheduler.add_job(run_once, "interval", minutes=interval_minutes)
-    scheduler.add_job(run_gemini_retry_once, "interval", minutes=GEMINI_RETRY_DELAY_MINUTES)
+    scheduler.add_job(run_once, "interval", minutes=interval_minutes, max_instances=1, coalesce=True)
+    scheduler.add_job(
+        run_gemini_retry_once,
+        "interval",
+        minutes=GEMINI_RETRY_DELAY_MINUTES,
+        max_instances=1,
+        coalesce=True,
+    )
     logger.info("[Monitor] Starting — checking every %s minutes.", interval_minutes)
     logger.info("[Gemini Retry] Checking retry queue every %s minutes.", GEMINI_RETRY_DELAY_MINUTES)
     run_once()  # run immediately on start

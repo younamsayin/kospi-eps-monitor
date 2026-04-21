@@ -316,22 +316,17 @@ def _resolve_shinhan_pdf_url(client: httpx.Client, external_url: str, report: Op
             for item in collections[0].get("itemList", []):
                 if str(item.get("EXT", "")).lower() != "pdf":
                     continue
-                attachment_id = str(item.get("ATTACHMENT_ID") or item.get("FILE_CONTENT") or "").strip()
                 file_path = item.get("FILE_PATH")
                 display_name = item.get("DISPLAYNAME")
                 title = str(item.get("TITLE", ""))
                 company = str(report.get("company", "")) if report else ""
+                if not file_path or not display_name:
+                    continue
                 # Require at least some textual overlap so we do not grab a
                 # random report from Shinhan's recent feed.
                 if company and company not in title and company not in query:
                     continue
-                if attachment_id:
-                    return (
-                        "https://bbs2.shinhansec.com/board/message/file.pdf.do"
-                        f"?attachmentId={attachment_id}"
-                    )
-                if file_path and display_name:
-                    return urljoin("https://www.shinhansec.com", f"{file_path}/{display_name}")
+                return urljoin("https://www.shinhansec.com", f"{file_path}/{display_name}")
         except (httpx.HTTPError, json.JSONDecodeError):
             continue
 
@@ -368,29 +363,13 @@ def download_pdf(pdf_url: str, report: Optional[dict] = None) -> Optional[bytes]
             if resolved_pdf_url:
                 target_url = resolved_pdf_url
             else:
-                page_html = page_resp.text
-                if (
-                    report
-                    and str(report.get("broker", "")).strip() == "신한투자증권"
-                    and "shinhansec.com" in page_html.lower()
-                ):
-                    resolved_external_pdf_url = _resolve_shinhan_pdf_url(
-                        client,
-                        "https://www.shinhansec.com/siw/insights/research/list/view-popup.do",
-                        report,
-                    )
-                    if resolved_external_pdf_url:
-                        target_url = resolved_external_pdf_url
-                    else:
-                        return None
-                else:
-                    external_url = _extract_external_report_url_from_page(page_html, str(page_resp.url))
-                    if not external_url:
-                        return None
-                    resolved_external_pdf_url = _resolve_external_pdf_url(client, external_url, report)
-                    if not resolved_external_pdf_url:
-                        return None
-                    target_url = resolved_external_pdf_url
+                external_url = _extract_external_report_url_from_page(page_resp.text, str(page_resp.url))
+                if not external_url:
+                    return None
+                resolved_external_pdf_url = _resolve_external_pdf_url(client, external_url, report)
+                if not resolved_external_pdf_url:
+                    return None
+                target_url = resolved_external_pdf_url
 
         try:
             resp = _request_with_retry(client, "GET", target_url)
