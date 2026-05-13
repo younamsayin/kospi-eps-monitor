@@ -412,7 +412,8 @@ with tab1:
                     ticker,
                     report_day,
                     AVG(fwd_eps) AS consensus_eps,
-                    AVG(target_price) AS consensus_tp
+                    AVG(target_price) AS consensus_tp,
+                    COUNT(DISTINCT broker) AS broker_count
                 FROM broker_daily_latest
                 WHERE rn = 1
                 GROUP BY ticker, report_day
@@ -422,7 +423,9 @@ with tab1:
                     DATE(report_day, '-' || ((CAST(strftime('%w', report_day) AS INTEGER) + 6) % 7) || ' days') AS week_start,
                     AVG(consensus_eps) AS avg_consensus_eps,
                     AVG(consensus_tp) AS avg_consensus_tp,
-                    COUNT(DISTINCT ticker) AS company_count
+                    COUNT(DISTINCT ticker) AS company_count,
+                    SUM(broker_count) AS broker_observation_count,
+                    MAX(broker_count) AS max_broker_count
                 FROM daily_consensus
                 GROUP BY week_start
             )
@@ -430,7 +433,9 @@ with tab1:
                 week_start,
                 avg_consensus_eps,
                 avg_consensus_tp,
-                company_count
+                company_count,
+                broker_observation_count,
+                max_broker_count
             FROM weekly_consensus
             ORDER BY week_start DESC
             LIMIT 52
@@ -443,6 +448,8 @@ with tab1:
             trend_df = trend_df.sort_values("week_start")
             range_end = pd.Timestamp(date.today())
             range_start = pd.Timestamp(date.today() - timedelta(weeks=52))
+            hover_metric_label = "Reports" if selected_ticker else "Companies"
+            hover_metric_series = trend_df["broker_observation_count"] if selected_ticker else trend_df["company_count"]
             fig = go.Figure()
             fig.add_trace(go.Scatter(
                 x=trend_df["week_start"],
@@ -450,8 +457,8 @@ with tab1:
                 mode="lines+markers",
                 name="Avg EPS",
                 yaxis="y1",
-                hovertemplate="%{x}<br>Avg EPS: %{y:,.0f}<br>Companies: %{customdata}<extra></extra>",
-                customdata=trend_df["company_count"],
+                hovertemplate=f"%{{x}}<br>Avg EPS: %{{y:,.0f}}<br>{hover_metric_label}: %{{customdata}}<extra></extra>",
+                customdata=hover_metric_series,
             ))
             layout_kwargs = {
                 "xaxis": dict(
@@ -472,8 +479,8 @@ with tab1:
                     mode="lines+markers",
                     name="Avg TP",
                     yaxis="y2",
-                    hovertemplate="%{x}<br>Avg TP: %{y:,.0f}<br>Companies: %{customdata}<extra></extra>",
-                    customdata=trend_df["company_count"],
+                    hovertemplate=f"%{{x}}<br>Avg TP: %{{y:,.0f}}<br>{hover_metric_label}: %{{customdata}}<extra></extra>",
+                    customdata=hover_metric_series,
                 ))
                 layout_kwargs["yaxis2"] = dict(title="Average TP (KRW)", overlaying="y", side="right")
             else:

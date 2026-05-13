@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Changed
+- Fixed the single-company `Consensus` weekly trend hover so it shows contributing broker-report counts instead of the always-1 company count
 - Added feature-flagged KOSDAQ 150 monitoring behind `ENABLE_KOSDAQ150`, while keeping default behavior unchanged when the flag is off
 - Switched the optional KOSDAQ 150 constituent source to the PLUS 코스닥150 ETF holdings export and filtered out the non-equity cash row so the active universe expands to 350 names when enabled
 - Updated the monitor, reprocess script, dashboard labeling, and DB helpers to support a combined `KOSPI 200 + KOSDAQ 150` universe on the feature branch
