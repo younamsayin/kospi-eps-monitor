@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Changed
+- Expanded Gemini revision-reason extraction so Telegram EPS/TP alerts can include up to 10 report-grounded explanation sentences
 - Fixed the single-company `Consensus` weekly trend hover so it shows contributing broker-report counts instead of the always-1 company count
 - Added feature-flagged KOSDAQ 150 monitoring behind `ENABLE_KOSDAQ150`, while keeping default behavior unchanged when the flag is off
 - Switched the optional KOSDAQ 150 constituent source to the PLUS 코스닥150 ETF holdings export and filtered out the non-equity cash row so the active universe expands to 350 names when enabled
