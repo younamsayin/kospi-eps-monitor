@@ -90,6 +90,18 @@ CREATE TABLE IF NOT EXISTS ingestion_events (
     created_at      TEXT DEFAULT (datetime('now'))
 );
 
+CREATE TABLE IF NOT EXISTS tp_events (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    report_id   INTEGER REFERENCES analyst_reports(id),
+    ticker      TEXT NOT NULL,
+    broker      TEXT,
+    event_type  TEXT NOT NULL,  -- 'initiation' | 'withdrawal'
+    prev_tp     REAL,
+    new_tp      REAL,
+    report_date TEXT,
+    created_at  TEXT DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS gemini_extractions (
     id                  INTEGER PRIMARY KEY AUTOINCREMENT,
     report_id           INTEGER REFERENCES analyst_reports(id),
@@ -113,6 +125,7 @@ CREATE TABLE IF NOT EXISTS gemini_extractions (
 );
 
 CREATE INDEX IF NOT EXISTS idx_eps_ticker_year ON eps_estimates(ticker, fiscal_year);
+CREATE INDEX IF NOT EXISTS idx_tp_events_ticker ON tp_events(ticker, broker, report_date);
 CREATE INDEX IF NOT EXISTS idx_reports_ticker   ON analyst_reports(ticker);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_gemini_retries_pdf_hash ON gemini_extraction_retries(pdf_hash);
 CREATE INDEX IF NOT EXISTS idx_gemini_retries_next_retry ON gemini_extraction_retries(next_retry_at);
@@ -154,6 +167,30 @@ def init_db():
             conn.execute("ALTER TABLE analyst_reports ADD COLUMN pdf_hash TEXT")
         if "revision_reason" not in columns:
             conn.execute("ALTER TABLE analyst_reports ADD COLUMN revision_reason TEXT")
+        # Report-level TP/recommendation + quality-tracking columns (additive only).
+        for column, ddl in (
+            ("target_price", "ALTER TABLE analyst_reports ADD COLUMN target_price REAL"),
+            ("tp_suspect", "ALTER TABLE analyst_reports ADD COLUMN tp_suspect INTEGER DEFAULT 0"),
+            ("tp_suspect_reason", "ALTER TABLE analyst_reports ADD COLUMN tp_suspect_reason TEXT"),
+            ("recommendation", "ALTER TABLE analyst_reports ADD COLUMN recommendation TEXT"),
+            ("recommendation_norm", "ALTER TABLE analyst_reports ADD COLUMN recommendation_norm TEXT"),
+            ("broker_raw", "ALTER TABLE analyst_reports ADD COLUMN broker_raw TEXT"),
+        ):
+            if column not in columns:
+                conn.execute(ddl)
+        eps_columns = {
+            row["name"] for row in conn.execute("PRAGMA table_info(eps_estimates)").fetchall()
+        }
+        for column, ddl in (
+            ("suspect", "ALTER TABLE eps_estimates ADD COLUMN suspect INTEGER DEFAULT 0"),
+            ("suspect_reason", "ALTER TABLE eps_estimates ADD COLUMN suspect_reason TEXT"),
+            ("revenue", "ALTER TABLE eps_estimates ADD COLUMN revenue REAL"),
+            ("operating_profit", "ALTER TABLE eps_estimates ADD COLUMN operating_profit REAL"),
+            ("net_profit", "ALTER TABLE eps_estimates ADD COLUMN net_profit REAL"),
+            ("recommendation_norm", "ALTER TABLE eps_estimates ADD COLUMN recommendation_norm TEXT"),
+        ):
+            if column not in eps_columns:
+                conn.execute(ddl)
         conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_reports_pdf_hash ON analyst_reports(pdf_hash) WHERE pdf_hash IS NOT NULL"
         )
@@ -287,22 +324,32 @@ def insert_report(conn, report: dict) -> int:
     cur = conn.execute(
         """
         INSERT OR IGNORE INTO analyst_reports (
-            ticker, company, broker, source, title, revision_reason, report_url, pdf_hash, report_date
+            ticker, company, broker, broker_raw, source, title, revision_reason,
+            report_url, pdf_hash, report_date,
+            target_price, tp_suspect, tp_suspect_reason, recommendation, recommendation_norm
         )
         VALUES (
-            :ticker, :company, :broker, :source, :title, :revision_reason, :report_url, :pdf_hash, :report_date
+            :ticker, :company, :broker, :broker_raw, :source, :title, :revision_reason,
+            :report_url, :pdf_hash, :report_date,
+            :target_price, :tp_suspect, :tp_suspect_reason, :recommendation, :recommendation_norm
         )
         """,
         {
             "ticker": report.get("ticker"),
             "company": report.get("company"),
             "broker": report.get("broker"),
+            "broker_raw": report.get("broker_raw"),
             "source": report.get("source"),
             "title": report.get("title"),
             "revision_reason": report.get("revision_reason"),
             "report_url": report.get("report_url"),
             "pdf_hash": report.get("pdf_hash"),
             "report_date": report.get("report_date"),
+            "target_price": report.get("target_price"),
+            "tp_suspect": report.get("tp_suspect", 0),
+            "tp_suspect_reason": report.get("tp_suspect_reason"),
+            "recommendation": report.get("recommendation"),
+            "recommendation_norm": report.get("recommendation_norm"),
         },
     )
     return cur.lastrowid or 0
@@ -311,11 +358,76 @@ def insert_report(conn, report: dict) -> int:
 def insert_eps(conn, estimate: dict):
     conn.execute(
         """
-        INSERT INTO eps_estimates (report_id, ticker, broker, fiscal_year, fwd_eps, target_price, recommendation)
-        VALUES (:report_id, :ticker, :broker, :fiscal_year, :fwd_eps, :target_price, :recommendation)
+        INSERT INTO eps_estimates (
+            report_id, ticker, broker, fiscal_year, fwd_eps, target_price, recommendation,
+            recommendation_norm, revenue, operating_profit, net_profit, suspect, suspect_reason
+        )
+        VALUES (
+            :report_id, :ticker, :broker, :fiscal_year, :fwd_eps, :target_price, :recommendation,
+            :recommendation_norm, :revenue, :operating_profit, :net_profit, :suspect, :suspect_reason
+        )
         """,
-        estimate,
+        {
+            "report_id": estimate.get("report_id"),
+            "ticker": estimate.get("ticker"),
+            "broker": estimate.get("broker"),
+            "fiscal_year": estimate.get("fiscal_year"),
+            "fwd_eps": estimate.get("fwd_eps"),
+            "target_price": estimate.get("target_price"),
+            "recommendation": estimate.get("recommendation"),
+            "recommendation_norm": estimate.get("recommendation_norm"),
+            "revenue": estimate.get("revenue"),
+            "operating_profit": estimate.get("operating_profit"),
+            "net_profit": estimate.get("net_profit"),
+            "suspect": estimate.get("suspect", 0),
+            "suspect_reason": estimate.get("suspect_reason"),
+        },
     )
+
+
+def insert_tp_event(conn, event: dict):
+    conn.execute(
+        """
+        INSERT INTO tp_events (report_id, ticker, broker, event_type, prev_tp, new_tp, report_date)
+        VALUES (:report_id, :ticker, :broker, :event_type, :prev_tp, :new_tp, :report_date)
+        """,
+        {
+            "report_id": event.get("report_id"),
+            "ticker": event.get("ticker"),
+            "broker": event.get("broker"),
+            "event_type": event.get("event_type"),
+            "prev_tp": event.get("prev_tp"),
+            "new_tp": event.get("new_tp"),
+            "report_date": event.get("report_date"),
+        },
+    )
+
+
+def has_newer_report(conn, ticker: str, broker: str, report_date) -> bool:
+    """True if a later-dated report already exists for this ticker/broker."""
+    row = conn.execute(
+        """
+        SELECT 1 FROM analyst_reports
+        WHERE ticker = ? AND broker = ? AND report_date > ?
+        LIMIT 1
+        """,
+        (ticker, broker, report_date),
+    ).fetchone()
+    return row is not None
+
+
+def get_latest_prior_report_tp(conn, ticker: str, broker: str, current_report_date):
+    """Report-level TP of the single most recent prior report (TP may be NULL)."""
+    return conn.execute(
+        """
+        SELECT report_date, target_price
+        FROM analyst_reports
+        WHERE ticker = ? AND broker = ? AND report_date < ?
+        ORDER BY report_date DESC, id DESC
+        LIMIT 1
+        """,
+        (ticker, broker, current_report_date),
+    ).fetchone()
 
 
 def insert_ingestion_event(conn, event: dict):
@@ -479,7 +591,8 @@ def get_previous_eps_record(conn, ticker: str, fiscal_year: int, broker: str, cu
         FROM eps_estimates e
         JOIN analyst_reports r ON e.report_id = r.id
         WHERE e.ticker = ? AND e.fiscal_year = ? AND e.broker = ?
-          AND r.report_date < ?
+          AND r.report_date <= ?
+          AND COALESCE(e.suspect, 0) = 0
         ORDER BY r.report_date DESC, e.extracted_at DESC, e.id DESC
         LIMIT 1
         """,
@@ -510,7 +623,8 @@ def get_previous_target_price_record(conn, ticker: str, broker: str, current_rep
         FROM eps_estimates e
         JOIN analyst_reports r ON e.report_id = r.id
         WHERE e.ticker = ? AND e.broker = ? AND e.target_price IS NOT NULL
-          AND r.report_date < ?
+          AND r.report_date <= ?
+          AND COALESCE(r.tp_suspect, 0) = 0
         ORDER BY r.report_date DESC, e.extracted_at DESC, e.id DESC
         LIMIT 1
         """,
