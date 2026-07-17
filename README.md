@@ -27,6 +27,11 @@ Naver Finance / Bondweb → new analyst reports (PDF)
 - Validates Bondweb candidate reports against Gemini-extracted subject tickers before saving
 - Detects EPS upgrades/downgrades per broker per fiscal year
 - Detects target price raises/cuts per broker
+- Quality gates at ingestion: implausible target prices (vs live market price), EPS inconsistent with net profit / share count, and unconfirmed >50% jumps are flagged `suspect` — saved but excluded from alerts, revision baselines, and consensus
+- Canonicalizes broker names across renames/mergers (하이투자증권→iM증권, 이베스트→LS증권, …) so revision chains survive
+- Normalizes recommendations to BUY/HOLD/SELL/NOT_RATED and excludes Not-Rated research from TP consensus
+- Records target-price coverage initiations/withdrawals in `tp_events`
+- Escalates repeated Gemini extraction failures to a stronger model instead of retrying the identical call
 - Streamlit dashboard with consensus views, recent reports, revision history, and persistent favorite companies
 - Telegram alerts on EPS and target price changes, sent only after DB commit succeeds
 
@@ -52,6 +57,14 @@ TELEGRAM_BOT_TOKEN=your_bot_token_here                   # from @BotFather
 TELEGRAM_CHAT_ID=your_chat_id_here                       # channel or user ID
 EPS_UPGRADE_THRESHOLD=0.02                               # 2% change triggers alert
 TP_CHANGE_THRESHOLD=0.02                                 # 2% target price change triggers alert
+QUALITY_CHECKS_ENABLED=true                              # master switch for the quality gates below
+OUTLIER_CONFIRM_THRESHOLD=0.5                            # >50% same-broker change triggers a confirmation re-extraction
+OUTLIER_AGREE_TOLERANCE=0.02                             # two extraction passes must agree within 2%
+TP_PRICE_MIN_RATIO=0.2                                   # TP below 0.2x current price is flagged suspect
+TP_PRICE_MAX_RATIO=5.0                                   # TP above 5x current price is flagged suspect
+EPS_NP_MISMATCH_FACTOR=2.0                               # EPS vs net-profit/shares cross-check tolerance factor
+REPORT_DATE_MAX_DRIFT_DAYS=7                             # keep scraper date if the Gemini date drifts further
+GEMINI_ESCALATION_MODEL=gemini-3.1-pro-preview           # stronger model for retries (2nd attempt+) and outlier confirmation
 NAVER_SCRAPE_PAGES=1                                     # company-search pages per ticker (default path; effectively capped to 1)
 BONDWEB_SCRAPE_PAGES=10                                  # pages to scrape from Bondweb company-search/list mode
 SCRAPE_PAGES=10                                          # fallback shared default if source-specific values are omitted
@@ -107,9 +120,12 @@ kospi-eps-monitor/
 │   └── models.py       # SQLite schema and query helpers
 ├── alerts/
 │   └── telegram.py     # Telegram bot notifications
+├── normalization.py    # broker rename aliases + recommendation enum mapping
 ├── scripts/
 │   ├── audit_ingestion.py               # inspect ingestion failures, retry queue, empty EPS rows, and duplicate hashes
+│   ├── backfill_quality_fields.py       # backfill broker canonicalization, recommendation_norm, report-level TP (dry-run by default)
 │   ├── backfill_report_archives.py      # backfill local PDF archive files for existing DB rows
+│   ├── eval_extraction.py               # golden-set extraction eval harness (--seed, then hand-verify, then evaluate)
 │   ├── cleanup_shifted_fiscal_years.py  # repair high-confidence shifted fiscal-year EPS rows
 │   ├── deduplicate_same_day_reports.py  # remove same ticker/broker/date duplicates while keeping the most complete row
 │   ├── reprocess_archived_reports.py    # rerun archived PDFs through Gemini for Naver and Bondweb
@@ -138,4 +154,7 @@ kospi-eps-monitor/
 - Ingestion health can be checked with `python3 scripts/audit_ingestion.py --limit 25`
 - Raw Gemini responses are stored in the SQLite `gemini_extractions` table, linked by report metadata and `pdf_hash`
 - EPS revision detection is per broker — consensus-level revision tracking requires multiple brokers covering the same stock
+- Suspect-flagged rows (`eps_estimates.suspect`, `analyst_reports.tp_suspect`) are stored for audit but excluded from alerts and consensus; the `suspect_reason` column says why
+- To measure extraction accuracy: `python3 scripts/eval_extraction.py --seed 40`, hand-verify the entries in `tests/golden/golden_set.json`, then run `python3 scripts/eval_extraction.py` after any prompt/model change
 - The `.db` file is portable; back it up to preserve history
+- Rollback options for the quality upgrade (env kill-switch, git revert, DB restore) are documented in `ROLLBACK.md`

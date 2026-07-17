@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+### Added — TP/EPS tracking quality upgrade (2026-07-17)
+- Outlier gate at ingestion: same-broker EPS/TP changes above `OUTLIER_CONFIRM_THRESHOLD` (default 50%) trigger a second-model confirmation extraction; unconfirmed values are saved but flagged `suspect` and excluded from alerts, revision baselines, and dashboard consensus
+- Target-price sanity check against the live market price (`TP_PRICE_MIN_RATIO`–`TP_PRICE_MAX_RATIO`, default 0.2x–5x) via Naver's quote API
+- Unit-agnostic EPS vs net-profit/share-count cross-check (catches 원/천원 and 억원/십억원 order-of-magnitude extraction errors)
+- Persisted per-year `revenue`, `operating_profit`, `net_profit` from extractions (previously prompted for but discarded)
+- Broker canonicalization: rename/merger aliases (하이투자증권→iM증권, 이베스트→LS증권, 대우→미래에셋 등) applied at ingest and backfilled, preserving `broker_raw`, so revision chains survive brokerage renames
+- Recommendation normalization to `BUY/HOLD/SELL/NOT_RATED` (`recommendation_norm`); Not-Rated research excluded from TP consensus
+- Report-level `target_price`/`recommendation` on `analyst_reports`; dashboard TP revisions now read report-level TP
+- `tp_events` table recording target-price coverage initiations and withdrawals
+- Gemini report-date drift guard: extracted dates further than `REPORT_DATE_MAX_DRIFT_DAYS` (default 7) from the scraper listing date no longer override it
+- Same-day revision support (prev-record lookups use `<=`) and an out-of-order ingestion guard that suppresses alerts when a newer same-broker report already exists
+- FY(N-1) estimates are kept for January–March reports (prior-year results are not yet announced then)
+- Gemini retry escalation: from the second retry attempt, extraction runs on `GEMINI_ESCALATION_MODEL` (default `gemini-3.1-pro-preview`) instead of repeating the identical failing call
+- Enforced `response_schema` on Gemini extraction (prompt v4), eliminating free-form JSON shape drift
+- `scripts/backfill_quality_fields.py` (dry-run by default) and `scripts/eval_extraction.py` golden-set evaluation harness (`tests/golden/golden_set.json`)
+- All new ingestion behavior sits behind `QUALITY_CHECKS_ENABLED` (default true); see `ROLLBACK.md` for the full rollback ladder
+
 ### Changed
 - Expanded Gemini revision-reason extraction so Telegram EPS/TP alerts can include up to 10 report-grounded explanation sentences
 - Fixed the single-company `Consensus` weekly trend hover so it shows contributing broker-report counts instead of the always-1 company count
