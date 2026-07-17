@@ -19,9 +19,14 @@ Comparison tolerances: ticker exact; TP and per-FY EPS within 0.5%.
 
 import argparse
 import json
+import logging
 import os
 import sys
 import time
+
+# Silence the harmless google-genai warning about ignored 'thought_signature'
+# response parts (same suppression monitor.py applies).
+logging.getLogger("google_genai.types").setLevel(logging.ERROR)
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
