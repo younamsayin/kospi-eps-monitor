@@ -22,12 +22,13 @@ from dotenv import load_dotenv
 
 from db.models import (
     get_conn, init_db, upsert_kospi200, upsert_kosdaq150, get_active_universe,
-    insert_report, insert_eps,
+    insert_report, insert_eps, insert_tp_event,
     get_report_by_url, count_eps_estimates_for_report,
     insert_ingestion_event, insert_gemini_extraction,
     get_existing_report_urls,
     get_previous_eps_record, get_previous_target_price_record,
-    get_latest_prior_report_estimates,
+    get_latest_prior_report_estimates, get_latest_prior_report_tp,
+    has_newer_report,
     report_exists_by_pdf_hash,
     get_existing_pdf_hashes,
     get_pending_gemini_retry_hashes,
@@ -35,6 +36,8 @@ from db.models import (
     delete_gemini_retry, mark_gemini_retry_failed,
     wal_checkpoint,
 )
+from normalization import canonicalize_report_broker, normalize_recommendation
+from scraper.quote import get_quote
 from scraper.krx import fetch_kospi200, fetch_kosdaq150
 from scraper.naver import fetch_recent_reports as naver_fetch, download_pdf as naver_download
 from scraper.bondweb import (
@@ -73,6 +76,25 @@ DB_OPERATION_RETRY_DELAY_SECONDS = float(os.environ.get("DB_OPERATION_RETRY_DELA
 DB_FAILURE_ABORT_THRESHOLD = max(1, int(os.environ.get("DB_FAILURE_ABORT_THRESHOLD", "3")))
 ENABLE_KOSDAQ150 = os.environ.get("ENABLE_KOSDAQ150", "false").strip().lower() in {"1", "true", "yes", "on"}
 GEMINI_RETRY_LOCK = threading.Lock()
+
+# ── Quality-check configuration ──────────────────────────────────────────────
+# Master kill-switch: set QUALITY_CHECKS_ENABLED=false to restore pre-quality
+# ingestion behavior without any code rollback.
+QUALITY_CHECKS_ENABLED = os.environ.get("QUALITY_CHECKS_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
+# A same-broker change larger than this triggers a confirmation re-extraction.
+OUTLIER_CONFIRM_THRESHOLD = float(os.environ.get("OUTLIER_CONFIRM_THRESHOLD", "0.5"))
+# Two extraction passes must agree within this relative tolerance.
+OUTLIER_AGREE_TOLERANCE = float(os.environ.get("OUTLIER_AGREE_TOLERANCE", "0.02"))
+# Target price plausibility bounds relative to the current market price.
+TP_PRICE_MIN_RATIO = float(os.environ.get("TP_PRICE_MIN_RATIO", "0.2"))
+TP_PRICE_MAX_RATIO = float(os.environ.get("TP_PRICE_MAX_RATIO", "5.0"))
+# EPS vs net-profit/share-count cross-check: flag when the best unit
+# interpretation is still off by more than this factor.
+EPS_NP_MISMATCH_FACTOR = float(os.environ.get("EPS_NP_MISMATCH_FACTOR", "2.0"))
+# Keep the scraper listing date when the Gemini-extracted date drifts further than this.
+REPORT_DATE_MAX_DRIFT_DAYS = int(os.environ.get("REPORT_DATE_MAX_DRIFT_DAYS", "7"))
+# Stronger model used for Gemini retries (attempt >= 2) and outlier confirmation.
+GEMINI_ESCALATION_MODEL = os.environ.get("GEMINI_ESCALATION_MODEL", "gemini-3.1-pro-preview").strip() or None
 
 
 def _relative_gap(current: float, previous: float) -> float:
@@ -147,10 +169,22 @@ def _normalize_estimates(conn, report: dict, extracted: dict) -> list[dict]:
                 f"based on same-broker prior report alignment."
             )
 
+    # Keep FY(N-1) for Jan-Mar reports: Korean annual results are announced in
+    # Feb-Mar, so the prior fiscal year is still a live forward estimate then.
+    report_month = None
+    if report_date:
+        try:
+            report_month = int(str(report_date)[5:7])
+        except (TypeError, ValueError):
+            report_month = None
+    min_fiscal_year = report_year
+    if report_year is not None and report_month is not None and report_month <= 3:
+        min_fiscal_year = report_year - 1
+
     deduped = {}
     for est in normalized:
         fy = est["fiscal_year"]
-        if report_year is not None and fy < report_year:
+        if min_fiscal_year is not None and fy < min_fiscal_year:
             continue
         deduped[fy] = est
 
@@ -404,12 +438,36 @@ def _log_run_summary(source_stats: list[dict], retry_stats: dict, elapsed_second
     logger.info("=" * 72)
 
 
+def _date_drift_days(scraper_date, extracted_date) -> Optional[int]:
+    """Days between the scraper listing date and the Gemini-extracted date."""
+    try:
+        scraper_day = datetime.strptime(str(scraper_date)[:10], "%Y-%m-%d").date()
+        extracted_day = datetime.strptime(str(extracted_date)[:10], "%Y-%m-%d").date()
+    except (TypeError, ValueError):
+        return None
+    return abs((extracted_day - scraper_day).days)
+
+
 def _apply_extracted_metadata(report: dict, extracted: dict):
     if not report.get("ticker") and extracted.get("ticker"):
         report["ticker"] = extracted["ticker"]
         report["company"] = extracted.get("company", "")
-    if extracted.get("report_date"):
-        report["report_date"] = extracted["report_date"]
+    extracted_date = extracted.get("report_date")
+    if extracted_date:
+        scraper_date = report.get("report_date")
+        drift = _date_drift_days(scraper_date, extracted_date) if scraper_date else None
+        if QUALITY_CHECKS_ENABLED and drift is not None and drift > REPORT_DATE_MAX_DRIFT_DAYS:
+            # The revision chain is ordered by report_date; a hallucinated date
+            # silently reorders it, so prefer the scraper listing date.
+            report["_date_drift"] = f"scraper={scraper_date} extracted={extracted_date}"
+            logger.warning(
+                "    [!] Keeping scraper report_date %s; extracted date %s drifts %s day(s).",
+                scraper_date,
+                extracted_date,
+                drift,
+            )
+        else:
+            report["report_date"] = extracted_date
     if extracted.get("revision_reason"):
         report["revision_reason"] = extracted["revision_reason"]
 
@@ -567,6 +625,169 @@ def _subjects_match_after_extraction(report: dict, extracted: dict) -> bool:
     return True
 
 
+def _relative_change(new_value, prev_value) -> Optional[float]:
+    if new_value is None or prev_value in (None, 0):
+        return None
+    return abs(float(new_value) - float(prev_value)) / abs(float(prev_value))
+
+
+def _values_agree(first, second, tolerance: float) -> bool:
+    """True when two extraction passes produced the same value within tolerance."""
+    if first is None or second is None:
+        return False
+    first, second = float(first), float(second)
+    denom = max(abs(first), abs(second))
+    if denom == 0:
+        return True
+    return abs(first - second) / denom <= tolerance
+
+
+def _eps_matches_net_profit(fwd_eps, net_profit, shares, mismatch_factor: float) -> Optional[bool]:
+    """
+    Cross-check extracted EPS against net_profit / share count.
+    Report tables are printed in 억원 or 십억원 without saying which, so accept
+    either unit; only order-of-magnitude errors should fail. None = not checkable.
+    """
+    if not fwd_eps or not net_profit or not shares:
+        return None
+    for unit in (1e8, 1e9):  # 억원, 십억원
+        implied_eps = float(net_profit) * unit / float(shares)
+        if implied_eps == 0 or implied_eps * float(fwd_eps) < 0:
+            continue
+        ratio = max(abs(implied_eps), abs(float(fwd_eps))) / min(abs(implied_eps), abs(float(fwd_eps)))
+        if ratio <= mismatch_factor:
+            return True
+    return False
+
+
+def _load_prior_quality_baseline(report: dict, extracted: dict):
+    """Fetch same-broker prior TP/EPS using a short-lived connection."""
+    prior_tp = None
+    prior_eps = {}
+    if not (report.get("ticker") and report.get("broker") and report.get("report_date")):
+        return prior_tp, prior_eps
+    qconn = get_conn()
+    try:
+        tp_row = get_previous_target_price_record(
+            qconn, report["ticker"], report["broker"], report["report_date"],
+        )
+        prior_tp = float(tp_row["target_price"]) if tp_row else None
+        for est in extracted.get("estimates") or []:
+            fiscal_year = est.get("fiscal_year")
+            if fiscal_year is None or est.get("fwd_eps") is None:
+                continue
+            try:
+                fiscal_year = int(fiscal_year)
+            except (TypeError, ValueError):
+                continue
+            eps_row = get_previous_eps_record(
+                qconn, report["ticker"], fiscal_year, report["broker"], report["report_date"],
+            )
+            if eps_row:
+                prior_eps[fiscal_year] = float(eps_row["fwd_eps"])
+    finally:
+        qconn.close()
+    return prior_tp, prior_eps
+
+
+def _run_quality_checks(report: dict, extracted: dict, pdf_bytes: bytes):
+    """
+    Flag implausible TP/EPS values as suspect before they enter the revision
+    chain. Suspect rows are still saved but excluded from alerts, revision
+    baselines, and dashboard consensus.
+    """
+    ticker = report.get("ticker")
+    estimates = extracted.get("estimates") or []
+    new_tp = extracted.get("target_price")
+    quote = None
+
+    # 1. Target price plausibility vs current market price.
+    if new_tp and ticker:
+        quote = get_quote(ticker)
+        price = quote.get("price")
+        if price:
+            ratio = float(new_tp) / price
+            if not (TP_PRICE_MIN_RATIO <= ratio <= TP_PRICE_MAX_RATIO):
+                extracted["tp_suspect"] = 1
+                extracted["tp_suspect_reason"] = f"tp_price_ratio={ratio:.2f}"
+                logger.warning(
+                    "    [!] Suspect target price %s: %.2fx the current price %s.",
+                    new_tp, ratio, price,
+                )
+
+    # 2. EPS vs net-profit/share-count cross-check.
+    if ticker and any(est.get("fwd_eps") and est.get("net_profit") for est in estimates):
+        if quote is None:
+            quote = get_quote(ticker)
+        shares = quote.get("shares")
+        if shares:
+            for est in estimates:
+                verdict = _eps_matches_net_profit(
+                    est.get("fwd_eps"), est.get("net_profit"), shares, EPS_NP_MISMATCH_FACTOR,
+                )
+                if verdict is False:
+                    est["suspect"] = 1
+                    est["suspect_reason"] = "eps_np_mismatch"
+                    logger.warning(
+                        "    [!] Suspect EPS %s for FY%s: inconsistent with net profit %s and ~%.0f shares.",
+                        est.get("fwd_eps"), est.get("fiscal_year"), est.get("net_profit"), shares,
+                    )
+
+    # 3. Outlier gate vs same-broker prior values, with a confirmation pass.
+    prior_tp, prior_eps = _load_prior_quality_baseline(report, extracted)
+    tp_change = None if extracted.get("tp_suspect") else _relative_change(new_tp, prior_tp)
+    tp_outlier = tp_change is not None and tp_change > OUTLIER_CONFIRM_THRESHOLD
+    outlier_years = set()
+    for est in estimates:
+        if est.get("suspect"):
+            continue
+        change = _relative_change(est.get("fwd_eps"), prior_eps.get(est.get("fiscal_year")))
+        if change is not None and change > OUTLIER_CONFIRM_THRESHOLD:
+            outlier_years.add(est.get("fiscal_year"))
+    if not tp_outlier and not outlier_years:
+        return
+
+    logger.info(
+        "    Large change vs prior broker values (tp_outlier=%s, eps_years=%s); running confirmation extraction.",
+        tp_outlier, sorted(outlier_years),
+    )
+    confirm, _confirm_error, _confirm_meta = extract_eps_from_pdf(
+        pdf_bytes,
+        return_error=True,
+        return_metadata=True,
+        model=GEMINI_ESCALATION_MODEL,
+    )
+    confirm_tp = confirm.get("target_price") if confirm else None
+    confirm_eps = {}
+    if confirm:
+        for est in confirm.get("estimates") or []:
+            try:
+                confirm_eps[int(est.get("fiscal_year"))] = est.get("fwd_eps")
+            except (TypeError, ValueError):
+                continue
+    unconfirmed_reason = "outlier_unconfirmed" if confirm else "outlier_confirm_failed"
+
+    if tp_outlier:
+        if confirm and _values_agree(new_tp, confirm_tp, OUTLIER_AGREE_TOLERANCE):
+            logger.info("    Outlier target price confirmed by second extraction; keeping.")
+        else:
+            extracted["tp_suspect"] = 1
+            extracted["tp_suspect_reason"] = unconfirmed_reason
+            logger.warning("    [!] Outlier target price NOT confirmed (%s); flagged suspect.", unconfirmed_reason)
+    for est in estimates:
+        if est.get("fiscal_year") not in outlier_years:
+            continue
+        if confirm and _values_agree(est.get("fwd_eps"), confirm_eps.get(est.get("fiscal_year")), OUTLIER_AGREE_TOLERANCE):
+            logger.info("    Outlier EPS for FY%s confirmed by second extraction; keeping.", est.get("fiscal_year"))
+            continue
+        est["suspect"] = 1
+        est["suspect_reason"] = unconfirmed_reason
+        logger.warning(
+            "    [!] Outlier EPS for FY%s NOT confirmed (%s); flagged suspect.",
+            est.get("fiscal_year"), unconfirmed_reason,
+        )
+
+
 def refresh_primary_universe():
     logger.info("[KRX] Fetching KOSPI 200 constituents...")
     kospi200 = fetch_kospi200()
@@ -589,12 +810,19 @@ def refresh_primary_universe():
     return kospi200, kosdaq150
 
 
-def _extract_report_payload(report: dict, pdf_bytes: bytes, kospi200_tickers: set) -> Tuple[str, Optional[dict]]:
-    """Extract EPS from a PDF without touching SQLite."""
+def _extract_report_payload(
+    report: dict,
+    pdf_bytes: bytes,
+    kospi200_tickers: set,
+    extraction_model: Optional[str] = None,
+) -> Tuple[str, Optional[dict]]:
+    """Extract EPS from a PDF. Only opens short-lived SQLite connections."""
+    canonicalize_report_broker(report)
     extracted, gemini_error, gemini_metadata = extract_eps_from_pdf(
         pdf_bytes,
         return_error=True,
         return_metadata=True,
+        model=extraction_model,
     )
     report["_gemini_metadata"] = gemini_metadata
     if not extracted:
@@ -616,6 +844,22 @@ def _extract_report_payload(report: dict, pdf_bytes: bytes, kospi200_tickers: se
         report["_gemini_error"] = "Gemini extracted a non-KOSPI200 or missing ticker"
         return "non_kospi", None
 
+    if QUALITY_CHECKS_ENABLED:
+        # Normalize estimates now (short-lived connection) so quality checks
+        # see post-shift, post-cutoff fiscal years; the save step skips
+        # re-normalizing via the flag below.
+        qconn = get_conn()
+        try:
+            extracted["estimates"] = _normalize_estimates(qconn, report, extracted)
+        finally:
+            qconn.close()
+        extracted["_estimates_normalized"] = True
+        try:
+            _run_quality_checks(report, extracted, pdf_bytes)
+        except Exception as exc:
+            # Quality checks must never block ingestion.
+            logger.warning("    [!] Quality checks errored; continuing without flags: %s", exc)
+
     return "ready", extracted
 
 
@@ -623,8 +867,22 @@ def _collect_pending_alerts(conn, report: dict, extracted: dict) -> list:
     """Collect alert data BEFORE the DB write, but don't send yet."""
     pending = []
 
-    # Target price alert
+    # Out-of-order ingestion guard: when a newer report from this broker is
+    # already saved (backfill/retry), an alert would compare stale values.
+    if (
+        report.get("ticker") and report.get("broker") and report.get("report_date")
+        and has_newer_report(conn, report["ticker"], report["broker"], report["report_date"])
+    ):
+        logger.info(
+            "    Skipping alerts: a newer %s report for %s already exists.",
+            report["broker"], report["ticker"],
+        )
+        return pending
+
+    # Target price alert (skipped when the TP failed quality checks)
     new_tp = extracted.get("target_price")
+    if extracted.get("tp_suspect"):
+        new_tp = None
     if new_tp and report.get("ticker") and report.get("broker") and report.get("report_date"):
         prev_tp_row = get_previous_target_price_record(
             conn, report["ticker"], report["broker"], report["report_date"],
@@ -641,8 +899,10 @@ def _collect_pending_alerts(conn, report: dict, extracted: dict) -> list:
                 "revision_reason": extracted.get("revision_reason"),
             }))
 
-    # EPS alerts (per estimate)
+    # EPS alerts (per estimate; suspect estimates never alert)
     for est in extracted.get("estimates", []):
+        if est.get("suspect"):
+            continue
         fiscal_year = est.get("fiscal_year")
         new_eps = est.get("fwd_eps")
         if not fiscal_year or new_eps is None:
@@ -682,12 +942,56 @@ def _send_pending_alerts(pending_alerts: list):
             send_eps_change_alert(**data)
 
 
+def _detect_tp_event(conn, report: dict, extracted: dict) -> Optional[dict]:
+    """Detect target-price coverage initiation/withdrawal (recorded, not alerted)."""
+    if not (report.get("ticker") and report.get("broker") and report.get("report_date")):
+        return None
+    if extracted.get("tp_suspect"):
+        return None
+    new_tp = extracted.get("target_price")
+    prev_tp_row = get_previous_target_price_record(
+        conn, report["ticker"], report["broker"], report["report_date"],
+    )
+    base_event = {
+        "ticker": report["ticker"],
+        "broker": report["broker"],
+        "report_date": report["report_date"],
+    }
+    if new_tp and prev_tp_row is None:
+        return {**base_event, "event_type": "initiation", "prev_tp": None, "new_tp": new_tp}
+    if not new_tp and prev_tp_row is not None:
+        # Only a withdrawal when the immediately prior report still carried a TP;
+        # otherwise every TP-less report would re-fire the event.
+        latest_prior = get_latest_prior_report_tp(
+            conn, report["ticker"], report["broker"], report["report_date"],
+        )
+        if latest_prior and latest_prior["target_price"]:
+            return {
+                **base_event,
+                "event_type": "withdrawal",
+                "prev_tp": float(latest_prior["target_price"]),
+                "new_tp": None,
+            }
+    return None
+
+
 def _save_extracted_report(conn, report: dict, extracted: dict) -> str:
     """Save an already-extracted report to SQLite. Returns a compact status string."""
-    extracted["estimates"] = _normalize_estimates(conn, report, extracted)
+    if not extracted.pop("_estimates_normalized", False):
+        extracted["estimates"] = _normalize_estimates(conn, report, extracted)
 
-    # Collect alerts BEFORE writing, but don't send until commit succeeds
+    # Report-level TP/recommendation (the TP is a report-level fact; the copy on
+    # each estimate row is kept for backward compatibility).
+    extracted["recommendation_norm"] = normalize_recommendation(extracted.get("recommendation"))
+    report["target_price"] = extracted.get("target_price")
+    report["tp_suspect"] = 1 if extracted.get("tp_suspect") else 0
+    report["tp_suspect_reason"] = extracted.get("tp_suspect_reason")
+    report["recommendation"] = extracted.get("recommendation")
+    report["recommendation_norm"] = extracted["recommendation_norm"]
+
+    # Collect alerts + TP events BEFORE writing, but don't send until commit succeeds
     pending_alerts = _collect_pending_alerts(conn, report, extracted)
+    tp_event = _detect_tp_event(conn, report, extracted)
 
     report_id = insert_report(conn, report)
     if not report_id:
@@ -723,7 +1027,21 @@ def _save_extracted_report(conn, report: dict, extracted: dict) -> str:
             "fwd_eps": new_eps,
             "target_price": new_tp,
             "recommendation": extracted.get("recommendation"),
+            "recommendation_norm": extracted.get("recommendation_norm"),
+            "revenue": est.get("revenue"),
+            "operating_profit": est.get("operating_profit"),
+            "net_profit": est.get("net_profit"),
+            "suspect": 1 if est.get("suspect") else 0,
+            "suspect_reason": est.get("suspect_reason"),
         })
+
+    if tp_event:
+        tp_event["report_id"] = report_id
+        insert_tp_event(conn, tp_event)
+        logger.info(
+            "    [TP %s] %s / %s", tp_event["event_type"].upper(),
+            tp_event["ticker"], tp_event["broker"],
+        )
 
     conn.commit()
 
@@ -733,7 +1051,13 @@ def _save_extracted_report(conn, report: dict, extracted: dict) -> str:
     return "saved"
 
 
-def _extract_and_save_report(conn, report: dict, pdf_bytes: bytes, kospi200_tickers: set) -> str:
+def _extract_and_save_report(
+    conn,
+    report: dict,
+    pdf_bytes: bytes,
+    kospi200_tickers: set,
+    extraction_model: Optional[str] = None,
+) -> str:
     """Extract EPS from a PDF and save to DB. Returns a compact status string."""
 
     archived_path = report.get("local_pdf_path")
@@ -742,7 +1066,9 @@ def _extract_and_save_report(conn, report: dict, pdf_bytes: bytes, kospi200_tick
         report["local_pdf_path"] = archived_path
         logger.info("    Saved PDF: %s", archived_path)
 
-    status, extracted = _extract_report_payload(report, pdf_bytes, kospi200_tickers)
+    status, extracted = _extract_report_payload(
+        report, pdf_bytes, kospi200_tickers, extraction_model=extraction_model,
+    )
     if status != "ready":
         return status
     return _save_extracted_report(conn, report, extracted)
@@ -808,6 +1134,7 @@ def process_due_gemini_retries(conn, kospi200_tickers: set, trigger: str = "sche
                 "pdf_hash": retry["pdf_hash"],
                 "local_pdf_path": retry["local_pdf_path"],
             }
+            canonicalize_report_broker(report)
             current_attempts = int(retry["attempts"] or 0)
             next_attempt = current_attempts + 1
             label = f"{report.get('company')} ({report.get('ticker')}) — {report.get('broker')}"
@@ -857,7 +1184,15 @@ def process_due_gemini_retries(conn, kospi200_tickers: set, trigger: str = "sche
             with open(local_pdf_path, "rb") as f:
                 pdf_bytes = f.read()
 
-            status = _extract_and_save_report(conn, report, pdf_bytes, kospi200_tickers)
+            # First retry re-runs the default model; later attempts escalate to
+            # a stronger model — repeating the identical call mostly reproduces
+            # the identical failure.
+            extraction_model = GEMINI_ESCALATION_MODEL if current_attempts >= 1 else None
+            if extraction_model:
+                logger.info("[Gemini Retry] Escalating to model %s for %s", extraction_model, label)
+            status = _extract_and_save_report(
+                conn, report, pdf_bytes, kospi200_tickers, extraction_model=extraction_model,
+            )
             if status == "saved":
                 succeeded += 1
                 delete_gemini_retry(conn, retry["id"])
@@ -937,6 +1272,7 @@ def run_source(conn, source_name: str, reports: list, download_fn, kospi200_tick
     ingestion_events = []
 
     for idx, report in enumerate(reports, start=1):
+        canonicalize_report_broker(report)
         elapsed = time.time() - started_at
         avg_seconds = elapsed / max(1, idx - 1) if idx > 1 else 0
         remaining = total_reports - idx + 1

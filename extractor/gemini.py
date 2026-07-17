@@ -18,8 +18,36 @@ from dotenv import load_dotenv
 load_dotenv()
 
 MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.1-flash-lite-preview")
-PROMPT_VERSION = "eps_extraction_v3"
+PROMPT_VERSION = "eps_extraction_v4"
 logger = logging.getLogger(__name__)
+
+_ESTIMATE_SCHEMA = types.Schema(
+    type=types.Type.OBJECT,
+    properties={
+        "fiscal_year": types.Schema(type=types.Type.INTEGER),
+        "fwd_eps": types.Schema(type=types.Type.NUMBER, nullable=True),
+        "revenue": types.Schema(type=types.Type.NUMBER, nullable=True),
+        "operating_profit": types.Schema(type=types.Type.NUMBER, nullable=True),
+        "net_profit": types.Schema(type=types.Type.NUMBER, nullable=True),
+    },
+    required=["fiscal_year"],
+)
+
+# Enforced output shape — eliminates free-form JSON drift (lists, wrapper keys).
+RESPONSE_SCHEMA = types.Schema(
+    type=types.Type.OBJECT,
+    properties={
+        "company": types.Schema(type=types.Type.STRING),
+        "ticker": types.Schema(type=types.Type.STRING, nullable=True),
+        "broker": types.Schema(type=types.Type.STRING, nullable=True),
+        "report_date": types.Schema(type=types.Type.STRING, nullable=True),
+        "recommendation": types.Schema(type=types.Type.STRING, nullable=True),
+        "target_price": types.Schema(type=types.Type.NUMBER, nullable=True),
+        "revision_reason": types.Schema(type=types.Type.STRING, nullable=True),
+        "estimates": types.Schema(type=types.Type.ARRAY, items=_ESTIMATE_SCHEMA),
+    },
+    required=["company", "estimates"],
+)
 
 EXTRACTION_PROMPT = """
 You are a financial analyst assistant. This is a Korean stock analyst report (증권사 리포트).
@@ -46,6 +74,7 @@ Extract the following information and return ONLY valid JSON, no markdown, no ex
 }
 
 Rules:
+- If the report covers multiple companies, extract ONLY the primary subject company of the report
 - Include estimates for all fiscal years mentioned (typically current year + 1-2 forward years)
 - Focus on forward estimates (F, E, 전망치) rather than historical actuals when the report distinguishes them
 - report_date should be the actual publication date written in the PDF, not today's date
@@ -163,14 +192,22 @@ def _format_extraction_result(
     return result
 
 
-def extract_eps_from_pdf(pdf_bytes: bytes, return_error: bool = False, return_metadata: bool = False):
+def extract_eps_from_pdf(
+    pdf_bytes: bytes,
+    return_error: bool = False,
+    return_metadata: bool = False,
+    model: Optional[str] = None,
+):
     """
     Sends PDF bytes to Gemini and extracts structured EPS data.
     Returns parsed dict or None on failure.
     If return_error=True, returns (parsed_dict_or_none, error_message_or_none).
+    `model` overrides the default model (used for retry escalation and
+    outlier-confirmation passes).
     """
+    active_model = model or MODEL
     metadata = {
-        "model": MODEL,
+        "model": active_model,
         "prompt_version": PROMPT_VERSION,
         "raw_response": None,
         "parsed_payload": None,
@@ -197,11 +234,12 @@ def extract_eps_from_pdf(pdf_bytes: bytes, return_error: bool = False, return_me
             for attempt in range(3):
                 try:
                     response = client.models.generate_content(
-                        model=MODEL,
+                        model=active_model,
                         contents=[uploaded, EXTRACTION_PROMPT],
                         config=types.GenerateContentConfig(
                             temperature=0,
                             response_mime_type="application/json",
+                            response_schema=RESPONSE_SCHEMA,
                         ),
                     )
                     last_exc = None
