@@ -1,0 +1,663 @@
+{
+  "entries": [
+    {
+      "pdf_path": "reports/피엔티/naver/2024-05-13/137400_피엔티_미래에셋증권_1분기_서프라이즈._나혼자만_수주_잔고_2조원.pdf",
+      "company": "피엔티",
+      "broker": "미래에셋증권",
+      "report_date": "2024-05-13",
+      "title": "1분기 서프라이즈. 나혼자만 수주 잔고 2조원",
+      "verified": false,
+      "expected": {
+        "ticker": "137400",
+        "target_price": 60000.0,
+        "estimates": {
+          "2024": 5642.0,
+          "2025": 6416.0
+        }
+      }
+    },
+    {
+      "pdf_path": "reports/GKL/bondweb/2025-08-07/114090_GKL_KB증권_KB_기업_GKL_Buy_-_중국인이_돌아온다_이선화.pdf",
+      "company": "GKL",
+      "broker": "KB증권",
+      "report_date": "2025-08-07",
+      "title": "[KB: 기업] GKL (Buy) - 중국인이 돌아온다 / 이선화",
+      "verified": false,
+      "expected": {
+        "ticker": "114090",
+        "target_price": 22000.0,
+        "estimates": {
+          "2025": 1055.0,
+          "2026": 1273.0,
+          "2027": 1447.0
+        }
+      }
+    },
+    {
+      "pdf_path": "reports/동국제약/bondweb/2025-11-17/086450_동국제약_LS증권_정홍식_Mid-Small_Cap_동국제약_086450_3Q25_Review_영업이익_성장성_유지.pdf",
+      "company": "동국제약",
+      "broker": "LS증권",
+      "report_date": "2025-11-17",
+      "title": "[정홍식 Mid-Small Cap] 동국제약(086450): 3Q25 Review: 영업이익 성장성 유지",
+      "verified": false,
+      "expected": {
+        "ticker": "086450",
+        "target_price": 25000.0,
+        "estimates": {
+          "2025": 1559.0,
+          "2026": 1797.0,
+          "2027": 2066.0
+        }
+      }
+    },
+    {
+      "pdf_path": "reports/주성엔지니어링/naver/2025-01-15/036930_주성엔지니어링_SK증권_견조한_실적_아래_고객_및_제품_저변_확대.pdf",
+      "company": "주성엔지니어링",
+      "broker": "SK증권",
+      "report_date": "2025-01-15",
+      "title": "견조한 실적 아래 고객 및 제품 저변 확대",
+      "verified": false,
+      "expected": {
+        "ticker": "036930",
+        "target_price": 43000.0,
+        "estimates": {
+          "2025": 2347.0,
+          "2026": 2822.0
+        }
+      }
+    },
+    {
+      "pdf_path": "reports/메가스터디교육/bondweb/2026-03-20/215200_메가스터디교육_LS증권_정홍식_Mid-Small_Cap_메가스터디교육_215200_국내_교육기업_대장.pdf",
+      "company": "메가스터디교육",
+      "broker": "LS증권",
+      "report_date": "2026-03-20",
+      "title": "[정홍식 Mid-Small Cap] 메가스터디교육(215200): 국내 교육기업 대장",
+      "verified": false,
+      "expected": {
+        "ticker": "215200",
+        "target_price": 60000.0,
+        "estimates": {
+          "2026": 8717.0,
+          "2027": 8920.0,
+          "2028": 9270.0
+        }
+      }
+    },
+    {
+      "pdf_path": "reports/SK아이이테크놀로지/naver/2026-05-15/361610_SK아이이테크놀로지_한화투자증권_인고의_시간_2027년의_가시성을_기다리며.pdf",
+      "company": "SK아이이테크놀로지",
+      "broker": "한화투자증권",
+      "report_date": "2026-05-15",
+      "title": "인고의 시간, 2027년의 가시성을 기다리며",
+      "verified": false,
+      "expected": {
+        "ticker": "361610",
+        "target_price": 21000.0,
+        "estimates": {
+          "2026": -3053.0,
+          "2027": -1974.0
+        }
+      }
+    },
+    {
+      "pdf_path": "reports/CJ/naver/2026-05-19/001040_CJ_SK증권_중복상장_규제로_주가_탄력성_확대.pdf",
+      "company": "CJ",
+      "broker": "SK증권",
+      "report_date": "2026-05-19",
+      "title": "중복상장 규제로 주가 탄력성 확대",
+      "verified": false,
+      "expected": {
+        "ticker": "001040",
+        "target_price": 230000.0,
+        "estimates": {
+          "2026": 4807.0,
+          "2027": 5531.0,
+          "2028": 6284.0
+        }
+      }
+    },
+    {
+      "pdf_path": "reports/데브시스터즈/naver/2026-02-10/194480_데브시스터즈_DS투자증권_IP도_이제_기득권_시대_수도권에_자가_보유.pdf",
+      "company": "데브시스터즈",
+      "broker": "DS투자증권",
+      "report_date": "2026-02-10",
+      "title": "IP도 이제 기득권 시대, 수도권에 자가 보유 ..",
+      "verified": false,
+      "expected": {
+        "ticker": "194480",
+        "target_price": 47000.0,
+        "estimates": {
+          "2026": 3129.0,
+          "2027": 5090.0
+        }
+      }
+    },
+    {
+      "pdf_path": "reports/브이엠/naver/2026-05-04/089970_브이엠_대신증권_실적은_역대_최대_주가는_여전히_저렴.pdf",
+      "company": "브이엠",
+      "broker": "대신증권",
+      "report_date": "2026-05-04",
+      "title": "실적은 역대 최대, 주가는 여전히 저렴",
+      "verified": false,
+      "expected": {
+        "ticker": "089970",
+        "target_price": 80000.0,
+        "estimates": {
+          "2026": 2850.0,
+          "2027": 3890.0,
+          "2028": 4192.0
+        }
+      }
+    },
+    {
+      "pdf_path": "reports/현대차/naver/2026-04-13/005380_현대차_유진투자증권_1Q26_Preview_Rough_Start.pdf",
+      "company": "현대차",
+      "broker": "유진투자증권",
+      "report_date": "2026-04-13",
+      "title": "1Q26 Preview: Rough Start",
+      "verified": false,
+      "expected": {
+        "ticker": "005380",
+        "target_price": 600000.0,
+        "estimates": {
+          "2026": 53625.0,
+          "2027": 60244.0
+        }
+      }
+    },
+    {
+      "pdf_path": "reports/HPSP/naver/2025-10-15/403870_HPSP_대신증권_과도기가_지나간다.pdf",
+      "company": "HPSP",
+      "broker": "대신증권",
+      "report_date": "2025-10-14",
+      "title": "과도기가 지나간다",
+      "verified": false,
+      "expected": {
+        "ticker": "403870",
+        "target_price": 42000.0,
+        "estimates": {
+          "2025": 861.0,
+          "2026": 1184.0,
+          "2027": 1346.0
+        }
+      }
+    },
+    {
+      "pdf_path": "reports/KB금융/naver/2026-04-28/105560_KB금융_유안타증권_기대되는_하반기_자사주_매입.pdf",
+      "company": "KB금융",
+      "broker": "유안타증권",
+      "report_date": "2026-04-28",
+      "title": "기대되는 하반기 자사주 매입",
+      "verified": false,
+      "expected": {
+        "ticker": "105560",
+        "target_price": 220000.0,
+        "estimates": {
+          "2026": 18759.0,
+          "2027": 19792.0,
+          "2028": 20552.0
+        }
+      }
+    },
+    {
+      "pdf_path": "reports/한화오션/naver/2026-04-28/042660_한화오션_대신증권_상선이_이끄는_이익_성장.pdf",
+      "company": "한화오션",
+      "broker": "대신증권",
+      "report_date": "2026-04-28",
+      "title": "상선이 이끄는 이익 성장",
+      "verified": false,
+      "expected": {
+        "ticker": "042660",
+        "target_price": 164000.0,
+        "estimates": {
+          "2026": 3271.0,
+          "2027": 6105.0,
+          "2028": 7024.0
+        }
+      }
+    },
+    {
+      "pdf_path": "reports/POSCO홀딩스/naver/2026-05-04/005490_POSCO홀딩스_미래에셋증권_자회사_실적_개선에_기인한_호실적.pdf",
+      "company": "POSCO홀딩스",
+      "broker": "미래에셋증권",
+      "report_date": "2026-05-04",
+      "title": "자회사 실적 개선에 기인한 호실적",
+      "verified": false,
+      "expected": {
+        "ticker": "005490",
+        "target_price": 620000.0,
+        "estimates": {
+          "2026": 21116.0,
+          "2027": 26584.0,
+          "2028": 25083.0
+        }
+      }
+    },
+    {
+      "pdf_path": "reports/한국가스공사/bondweb/2025-11-13/036460_한국가스공사_한화투자증권_한화투자증권_송유림_유틸리티_한국가스공사_036460_Buy_배당은_이어지겠지만.pdf",
+      "company": "한국가스공사",
+      "broker": "한화투자증권",
+      "report_date": "2025-11-13",
+      "title": "[한화투자증권 송유림][유틸리티] 한국가스공사[036460/Buy] 배당은 이어지겠지만",
+      "verified": false,
+      "expected": {
+        "ticker": "036460",
+        "target_price": 57000.0,
+        "estimates": {
+          "2025": 9750.0,
+          "2026": 10339.0,
+          "2027": 11262.0
+        }
+      }
+    },
+    {
+      "pdf_path": "reports/한화엔진/naver/2026-04-29/082740_한화엔진_iM증권_1Q26_NDR_후기_늦지_않았으니_매수.pdf",
+      "company": "한화엔진",
+      "broker": "iM증권",
+      "report_date": "2026-04-29",
+      "title": "1Q26 NDR 후기: 늦지 않았으니 매수",
+      "verified": false,
+      "expected": {
+        "ticker": "082740",
+        "target_price": 101000.0,
+        "estimates": {
+          "2026": 2254.0,
+          "2027": 3894.0,
+          "2028": 4511.0
+        }
+      }
+    },
+    {
+      "pdf_path": "reports/삼성E_A/naver/2026-06-10/028050_삼성E_A_키움증권_사우디_UAE의_에너지_전략_속_기회요인_확인.pdf",
+      "company": "삼성E&A",
+      "broker": "키움증권",
+      "report_date": "2026-06-10",
+      "title": "사우디, UAE의 에너지 전략 속 기회요인 확인",
+      "verified": false,
+      "expected": {
+        "ticker": "028050",
+        "target_price": 67000.0,
+        "estimates": {
+          "2026": 3521.0,
+          "2027": 4034.0
+        }
+      }
+    },
+    {
+      "pdf_path": "reports/피에스케이/bondweb/2026-06-12/319660_피에스케이_현대차증권_현대차증권_윤동욱_피에스케이_319660_BUY_-_최고의_1분기_그런데_더_좋아진다.pdf",
+      "company": "피에스케이",
+      "broker": "현대차증권",
+      "report_date": "2025-06-12",
+      "title": "[현대차증권 윤동욱] 피에스케이[319660/BUY]  - 최고의 1분기, 그런데 더 좋아진다",
+      "verified": false,
+      "expected": {
+        "ticker": "319660",
+        "target_price": 194000.0,
+        "estimates": {
+          "2025": 2712.0,
+          "2026": 5896.0,
+          "2027": 7908.0,
+          "2028": 9587.0
+        }
+      }
+    },
+    {
+      "pdf_path": "reports/두산테스나/naver/2026-04-30/131970_두산테스나_한화투자증권_토탈_테스트_하우스로_도약.pdf",
+      "company": "두산테스나",
+      "broker": "한화투자증권",
+      "report_date": "2026-04-30",
+      "title": "토탈 테스트 하우스로 도약",
+      "verified": false,
+      "expected": {
+        "ticker": "131970",
+        "target_price": 175000.0,
+        "estimates": {
+          "2026": 3304.0,
+          "2027": 5920.0
+        }
+      }
+    },
+    {
+      "pdf_path": "reports/대한전선/naver/2026-04-30/001440_대한전선_하나증권_유의미한_증익_확인.pdf",
+      "company": "대한전선",
+      "broker": "하나증권",
+      "report_date": "2026-04-30",
+      "title": "유의미한 증익 확인",
+      "verified": false,
+      "expected": {
+        "ticker": "001440",
+        "target_price": 60000.0,
+        "estimates": {
+          "2026": 384.0,
+          "2027": 722.0
+        }
+      }
+    },
+    {
+      "pdf_path": "reports/LG유플러스/naver/2026-05-28/032640_LG유플러스_하나증권_6월_전략_-_8월_보고_미리_보유하세요.pdf",
+      "company": "LG유플러스",
+      "broker": "하나증권",
+      "report_date": "2026-05-28",
+      "title": "6월 전략 - 8월 보고 미리 보유하세요",
+      "verified": false,
+      "expected": {
+        "ticker": "032640",
+        "target_price": 20000.0,
+        "estimates": {
+          "2026": 1684.0,
+          "2027": 1890.0
+        }
+      }
+    },
+    {
+      "pdf_path": "reports/대한항공/naver/2026-04-14/003490_대한항공_하나증권_1Q26_Re_단기_실적보다는_본질에_집중할_때.pdf",
+      "company": "대한항공",
+      "broker": "하나증권",
+      "report_date": "2026-04-14",
+      "title": "1Q26 Re: 단기 실적보다는 본질에 집중할 때",
+      "verified": false,
+      "expected": {
+        "ticker": "003490",
+        "target_price": 32000.0,
+        "estimates": {
+          "2026": 2020.0,
+          "2027": 3121.0
+        }
+      }
+    },
+    {
+      "pdf_path": "reports/더블유게임즈/bondweb/2025-12-01/192080_더블유게임즈_대신증권_대신증권_이지은_Initiation_더블유게임즈_현금이_가치를_증명할_때.pdf",
+      "company": "더블유게임즈",
+      "broker": "대신증권",
+      "report_date": "2025-12-01",
+      "title": "[대신증권 이지은][Initiation] 더블유게임즈: 현금이 가치를 증명할 때",
+      "verified": false,
+      "expected": {
+        "ticker": "192080",
+        "target_price": 70000.0,
+        "estimates": {
+          "2025": 6843.0,
+          "2026": 8410.0,
+          "2027": 8867.0
+        }
+      }
+    },
+    {
+      "pdf_path": "reports/SK텔레콤/naver/2026-04-09/017670_SK텔레콤_IBK투자증권_2분기부터_실적_회복_본격화.pdf",
+      "company": "SK텔레콤",
+      "broker": "IBK투자증권",
+      "report_date": "2026-04-09",
+      "title": "2분기부터 실적 회복 본격화",
+      "verified": false,
+      "expected": {
+        "ticker": "017670",
+        "target_price": 107000.0,
+        "estimates": {
+          "2026": 5898.0,
+          "2027": 6459.0,
+          "2028": 6967.0
+        }
+      }
+    },
+    {
+      "pdf_path": "reports/한전KPS/bondweb/2026-02-11/051600_한전KPS_LS증권_성종화_유틸리티_한전KPS_051600_원전_방향성은_유효._다만_실적은_너무_아쉬움.pdf",
+      "company": "한전KPS",
+      "broker": "LS증권",
+      "report_date": "2026-02-11",
+      "title": "[성종화 유틸리티] 한전KPS(051600): 원전 방향성은 유효. 다만, 실적은 너무 아쉬움",
+      "verified": false,
+      "expected": {
+        "ticker": "051600",
+        "target_price": 64000.0,
+        "estimates": {
+          "2026": 3304.0,
+          "2027": 3662.0
+        }
+      }
+    },
+    {
+      "pdf_path": "reports/에스티팜/naver/2026-04-28/237690_에스티팜_하나증권_1Q26_Re_아주_좋은_시작_기대할만한_한_해.pdf",
+      "company": "에스티팜",
+      "broker": "하나증권",
+      "report_date": "2026-04-28",
+      "title": "1Q26 Re: 아주 좋은 시작, 기대할만한 한 해",
+      "verified": false,
+      "expected": {
+        "ticker": "237690",
+        "target_price": 210000.0,
+        "estimates": {
+          "2026": 3283.0,
+          "2027": 5274.0
+        }
+      }
+    },
+    {
+      "pdf_path": "reports/포스코퓨처엠/bondweb/2026-05-04/003670_포스코퓨처엠_삼성증권_포스코퓨처엠_003670_양극재_판로_확대의_확인.pdf",
+      "company": "포스코퓨처엠",
+      "broker": "삼성증권",
+      "report_date": "2026-04-30",
+      "title": "[포스코퓨처엠 (003670)] 양극재 판로 확대의 확인",
+      "verified": false,
+      "expected": {
+        "ticker": "003670",
+        "target_price": 320000.0,
+        "estimates": {
+          "2026": 665.0,
+          "2027": 1296.0
+        }
+      }
+    },
+    {
+      "pdf_path": "reports/LG디스플레이/bondweb/2026-04-23/034220_LG디스플레이_대신증권_대신증권_박강호_1Q26_Review_LG디스플레이_1Q_선전_OLED_투자_확대.pdf",
+      "company": "LG디스플레이",
+      "broker": "대신증권",
+      "report_date": "2026-04-24",
+      "title": "[대신증권 박강호][1Q26 Review] LG디스플레이: 1Q 선전, OLED 투자 확대",
+      "verified": false,
+      "expected": {
+        "ticker": "034220",
+        "target_price": 17000.0,
+        "estimates": {
+          "2026": 91.0,
+          "2027": 1147.0,
+          "2028": 1416.0
+        }
+      }
+    },
+    {
+      "pdf_path": "reports/테크윙/bondweb/2024-07-03/089030_테크윙_현대차증권_현대차증권_박준영_테크윙_089030_BUY_-_더_라스트_맨_스탠딩.pdf",
+      "company": "테크윙",
+      "broker": "현대차증권",
+      "report_date": "2024-07-03",
+      "title": "[현대차증권 박준영] 테크윙[089030/BUY]  - 더 라스트 맨 스탠딩",
+      "verified": false,
+      "expected": {
+        "ticker": "089030",
+        "target_price": 100000.0,
+        "estimates": {
+          "2024": 1059.0,
+          "2025": 5045.0,
+          "2026": 5600.0
+        }
+      }
+    },
+    {
+      "pdf_path": "reports/현대차/bondweb/2026-04-16/005380_현대차_LS증권_이병근_자동차_로봇_현대차_005380_쉬어가는_1분.pdf",
+      "company": "현대차",
+      "broker": "LS증권",
+      "report_date": "2026-04-16",
+      "title": "[이병근 자동차/로봇] 현대차(005380): 쉬어가는 1분",
+      "verified": false,
+      "expected": {
+        "ticker": "005380",
+        "target_price": 630000.0,
+        "estimates": {
+          "2026": 52834.0,
+          "2027": 55607.0,
+          "2028": 57755.0
+        }
+      }
+    },
+    {
+      "pdf_path": "reports/브이엠/bondweb/2026-01-29/089970_브이엠_흥국증권_반도체_손인준_브이엠-장비_또한_슈퍼사이클_진입.pdf",
+      "company": "브이엠",
+      "broker": "흥국증권",
+      "report_date": "2026-01-29",
+      "title": "[반도체 손인준] 브이엠-장비 또한 슈퍼사이클 진입",
+      "verified": false,
+      "expected": {
+        "ticker": "089970",
+        "target_price": 40000.0,
+        "estimates": {
+          "2026": 2191.0
+        }
+      }
+    },
+    {
+      "pdf_path": "reports/SK텔레콤/naver/2026-05-08/017670_SK텔레콤_하나증권_1Q_리뷰_-_실적_저점_통과_2분기부터_실적.pdf",
+      "company": "SK텔레콤",
+      "broker": "하나증권",
+      "report_date": "2026-05-08",
+      "title": "1Q 리뷰 - 실적 저점 통과, 2분기부터 실적 ..",
+      "verified": false,
+      "expected": {
+        "ticker": "017670",
+        "target_price": 140000.0,
+        "estimates": {
+          "2026": 5350.0,
+          "2027": 5856.0
+        }
+      }
+    },
+    {
+      "pdf_path": "reports/카카오뱅크/naver/2026-05-07/323410_카카오뱅크_교보증권_1Q26_Review_지속적인_고객_확대를_통한_성.pdf",
+      "company": "카카오뱅크",
+      "broker": "교보증권",
+      "report_date": "2026-05-07",
+      "title": "1Q26 Review: 지속적인 고객 확대를 통한 성..",
+      "verified": false,
+      "expected": {
+        "ticker": "323410",
+        "target_price": 32000.0,
+        "estimates": {
+          "2026": 1504.0,
+          "2027": 1590.0,
+          "2028": 1788.0
+        }
+      }
+    },
+    {
+      "pdf_path": "reports/천보/naver/2026-01-02/278280_천보_키움증권_길어지는_기다림_아직은_보수적_관점_유지.pdf",
+      "company": "천보",
+      "broker": "키움증권",
+      "report_date": "2026-01-02",
+      "title": "길어지는 기다림, 아직은 보수적 관점 유지",
+      "verified": false,
+      "expected": {
+        "ticker": "278280",
+        "target_price": 52000.0,
+        "estimates": {
+          "2026": -426.0
+        }
+      }
+    },
+    {
+      "pdf_path": "reports/신세계/bondweb/2026-07-02/004170_신세계_삼성증권_신세계_004170_실적_증가와_valuation_상승이_동시에_가능한_환경.pdf",
+      "company": "신세계",
+      "broker": "삼성증권",
+      "report_date": "2026-07-01",
+      "title": "[신세계 (004170)] 실적 증가와 valuation 상승이 동시에 가능한 환경",
+      "verified": false,
+      "expected": {
+        "ticker": "004170",
+        "target_price": 970000.0,
+        "estimates": {
+          "2026": 38914.0,
+          "2027": 43185.0,
+          "2028": 45719.0
+        }
+      }
+    },
+    {
+      "pdf_path": "reports/테스/naver/2025-09-15/095610_테스_한화투자증권_내년까지_편안한_증익_구간.pdf",
+      "company": "테스",
+      "broker": "한화투자증권",
+      "report_date": "2025-09-15",
+      "title": "내년까지 편안한 증익 구간",
+      "verified": false,
+      "expected": {
+        "ticker": "095610",
+        "target_price": 45000.0,
+        "estimates": {
+          "2025": 3453.0,
+          "2026": 4102.0
+        }
+      }
+    },
+    {
+      "pdf_path": "reports/삼성E_A/naver/2026-07-15/028050_삼성E_A_유진투자증권_반도체_특수_본격화.pdf",
+      "company": "삼성E&A",
+      "broker": "유진투자증권",
+      "report_date": "2026-07-15",
+      "title": "반도체 특수 본격화",
+      "verified": false,
+      "expected": {
+        "ticker": "028050",
+        "target_price": 68000.0,
+        "estimates": {
+          "2026": 3913.0,
+          "2027": 4652.0
+        }
+      }
+    },
+    {
+      "pdf_path": "reports/브이티/bondweb/2025-08-14/018290_브이티_NH투자증권_NH_정지윤_브이티_-상저하고.pdf",
+      "company": "브이티",
+      "broker": "NH투자증권",
+      "report_date": "2025-08-14",
+      "title": "[NH/정지윤] 브이티 -상저하고",
+      "verified": false,
+      "expected": {
+        "ticker": "018290",
+        "target_price": null,
+        "estimates": {
+          "2025": 2652.0,
+          "2026": 3230.0
+        }
+      }
+    },
+    {
+      "pdf_path": "reports/코스메카코리아/bondweb/2026-05-11/241710_코스메카코리아_다올투자증권_다올투자증권_박종현_코스메카코리아_241710_-_성장세_대비_저평가.pdf",
+      "company": "코스메카코리아",
+      "broker": "다올투자증권",
+      "report_date": "2026-05-11",
+      "title": "[다올투자증권 박종현] 코스메카코리아(241710) - 성장세 대비 저평가",
+      "verified": false,
+      "expected": {
+        "ticker": "241710",
+        "target_price": 120000.0,
+        "estimates": {
+          "2026": 6016.0,
+          "2027": 6317.0
+        }
+      }
+    },
+    {
+      "pdf_path": "reports/CJ제일제당/bondweb/2026-05-13/097950_CJ제일제당_LS증권_박성호_음식료_엔터_CJ제일제당_097950_바이오를_필두로_하반기_실적_개선.pdf",
+      "company": "CJ제일제당",
+      "broker": "LS증권",
+      "report_date": "2026-05-13",
+      "title": "[박성호 음식료/엔터] CJ제일제당(097950): 바이오를 필두로 하반기 실적 개선",
+      "verified": false,
+      "expected": {
+        "ticker": "097950",
+        "target_price": 270000.0,
+        "estimates": {
+          "2026": 28495.0,
+          "2027": 26832.0,
+          "2028": 32291.0
+        }
+      }
+    }
+  ]
+}
