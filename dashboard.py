@@ -225,6 +225,7 @@ total_revisions = q("""
         SELECT e.fwd_eps,
                LAG(e.fwd_eps) OVER (PARTITION BY e.ticker, e.fiscal_year, e.broker ORDER BY e.extracted_at) AS prev_eps
         FROM eps_estimates e
+        WHERE COALESCE(e.suspect, 0) = 0
     ) WHERE prev_eps IS NOT NULL AND abs(fwd_eps - prev_eps) / abs(prev_eps) > 0.02
 """).iloc[0]["n"]
 
@@ -259,14 +260,25 @@ with tab1:
 
     consensus_df = q(f"""
         WITH latest_per_broker AS (
-            SELECT e.ticker, r.company, e.broker, e.fiscal_year, e.fwd_eps, e.target_price,
+            SELECT e.ticker, r.company, e.broker, e.fiscal_year, e.fwd_eps,
+                   CASE
+                       WHEN COALESCE(r.tp_suspect, 0) = 0
+                        AND COALESCE(e.recommendation_norm, '') != 'NOT_RATED'
+                       THEN e.target_price
+                   END AS target_price,
                    ROW_NUMBER() OVER (PARTITION BY e.ticker, e.broker, e.fiscal_year ORDER BY e.extracted_at DESC) AS rn
             FROM eps_estimates e
             JOIN analyst_reports r ON e.report_id = r.id
-            WHERE e.fiscal_year = ? AND e.fwd_eps IS NOT NULL {stale_filter} {ticker_filter}
+            WHERE e.fiscal_year = ? AND e.fwd_eps IS NOT NULL
+              AND COALESCE(e.suspect, 0) = 0 {stale_filter} {ticker_filter}
         ),
         week_old_per_broker AS (
-            SELECT e.ticker, r.company, e.broker, e.fiscal_year, e.fwd_eps, e.target_price,
+            SELECT e.ticker, r.company, e.broker, e.fiscal_year, e.fwd_eps,
+                   CASE
+                       WHEN COALESCE(r.tp_suspect, 0) = 0
+                        AND COALESCE(e.recommendation_norm, '') != 'NOT_RATED'
+                       THEN e.target_price
+                   END AS target_price,
                    ROW_NUMBER() OVER (
                        PARTITION BY e.ticker, e.broker, e.fiscal_year
                        ORDER BY e.extracted_at DESC, e.id DESC
@@ -275,6 +287,7 @@ with tab1:
             JOIN analyst_reports r ON e.report_id = r.id
             WHERE e.fiscal_year = ?
               AND e.fwd_eps IS NOT NULL
+              AND COALESCE(e.suspect, 0) = 0
               AND DATE(COALESCE(r.report_date, DATE(e.extracted_at))) >= DATE('now', ?)
               AND DATE(e.extracted_at) <= DATE('now', '-7 day')
               {ticker_filter}
@@ -394,7 +407,11 @@ with tab1:
                     e.broker,
                     e.fiscal_year,
                     e.fwd_eps,
-                    e.target_price,
+                    CASE
+                        WHEN COALESCE(r.tp_suspect, 0) = 0
+                         AND COALESCE(e.recommendation_norm, '') != 'NOT_RATED'
+                        THEN e.target_price
+                    END AS target_price,
                     COALESCE(r.report_date, DATE(e.extracted_at)) AS report_day,
                     ROW_NUMBER() OVER (
                         PARTITION BY e.ticker, e.broker, e.fiscal_year, COALESCE(r.report_date, DATE(e.extracted_at))
@@ -404,6 +421,7 @@ with tab1:
                 JOIN analyst_reports r ON e.report_id = r.id
                 WHERE e.fiscal_year = ?
                   AND (e.fwd_eps IS NOT NULL OR e.target_price IS NOT NULL)
+                  AND COALESCE(e.suspect, 0) = 0
                   AND DATE(COALESCE(r.report_date, DATE(e.extracted_at))) >= DATE('now', ?)
                   {trend_filter}
             ),
@@ -516,9 +534,9 @@ with tab1:
                     e.broker,
                     MAX(r.id) AS report_id,
                     MAX(e.extracted_at) AS extracted_at,
-                    MAX(CASE WHEN e.fiscal_year = ? THEN e.fwd_eps END) AS eps_this_year,
-                    MAX(CASE WHEN e.fiscal_year = ? THEN e.fwd_eps END) AS eps_next_year,
-                    MAX(e.target_price) AS target_price
+                    MAX(CASE WHEN e.fiscal_year = ? AND COALESCE(e.suspect, 0) = 0 THEN e.fwd_eps END) AS eps_this_year,
+                    MAX(CASE WHEN e.fiscal_year = ? AND COALESCE(e.suspect, 0) = 0 THEN e.fwd_eps END) AS eps_next_year,
+                    MAX(CASE WHEN COALESCE(r.tp_suspect, 0) = 0 THEN e.target_price END) AS target_price
                 FROM analyst_reports r
                 JOIN eps_estimates e ON e.report_id = r.id
                 WHERE r.ticker != ''
@@ -665,6 +683,7 @@ with tab3:
         FROM eps_estimates e
         JOIN analyst_reports r ON e.report_id = r.id
         WHERE DATE(COALESCE(r.report_date, DATE(e.extracted_at))) >= DATE('now', ?)
+          AND COALESCE(e.suspect, 0) = 0
           {ticker_filter}
         ORDER BY r.report_date DESC, e.extracted_at DESC
     """, params)
@@ -713,28 +732,32 @@ with tab3:
 
     # --- Target Price Revisions ---
     st.subheader("Target Price Revisions")
-    tp_filter = "AND e.ticker = ?" if selected_ticker else ""
+    tp_filter = "AND r.ticker = ?" if selected_ticker else ""
     tp_params = [f"-{REVISION_LOOKBACK_DAYS} day"]
     if selected_ticker:
         tp_params.append(selected_ticker)
     tp_params = tuple(tp_params)
     tp_rev = q(f"""
         WITH report_tps AS (
+            -- Report-level TP (falls back to estimate rows for pre-backfill data)
             SELECT
-                e.report_id,
-                e.ticker,
+                r.id AS report_id,
+                r.ticker,
                 r.company,
-                e.broker,
-                e.target_price,
-                MIN(e.extracted_at) AS extracted_at,
+                r.broker,
+                COALESCE(r.target_price, (
+                    SELECT MAX(e.target_price) FROM eps_estimates e WHERE e.report_id = r.id
+                )) AS target_price,
+                COALESCE(r.fetched_at, r.report_date) AS extracted_at,
                 r.report_date,
                 r.report_url
-            FROM eps_estimates e
-            JOIN analyst_reports r ON e.report_id = r.id
-            WHERE e.target_price IS NOT NULL
-              AND DATE(COALESCE(r.report_date, DATE(e.extracted_at))) >= DATE('now', ?)
+            FROM analyst_reports r
+            WHERE COALESCE(r.tp_suspect, 0) = 0
+              AND DATE(r.report_date) >= DATE('now', ?)
               {tp_filter}
-            GROUP BY e.report_id, e.ticker, r.company, e.broker, e.target_price, r.report_date, r.report_url
+        ),
+        tp_rows AS (
+            SELECT * FROM report_tps WHERE target_price IS NOT NULL
         )
         SELECT
             company,
@@ -752,7 +775,7 @@ with tab3:
             ) AS prev_report_date,
             extracted_at,
             report_url
-        FROM report_tps
+        FROM tp_rows
         ORDER BY report_date DESC, extracted_at DESC, report_id DESC
     """, tp_params)
     tp_rev = tp_rev.dropna(subset=["prev_tp", "target_price"]).copy()
