@@ -6,7 +6,7 @@
       "broker": "미래에셋증권",
       "report_date": "2024-05-13",
       "title": "1분기 서프라이즈. 나혼자만 수주 잔고 2조원",
-      "verified": false,
+      "verified": true,
       "expected": {
         "ticker": "137400",
         "target_price": 60000.0,
@@ -22,7 +22,7 @@
       "broker": "KB증권",
       "report_date": "2025-08-07",
       "title": "[KB: 기업] GKL (Buy) - 중국인이 돌아온다 / 이선화",
-      "verified": false,
+      "verified": true,
       "expected": {
         "ticker": "114090",
         "target_price": 22000.0,
@@ -39,7 +39,7 @@
       "broker": "LS증권",
       "report_date": "2025-11-17",
       "title": "[정홍식 Mid-Small Cap] 동국제약(086450): 3Q25 Review: 영업이익 성장성 유지",
-      "verified": false,
+      "verified": true,
       "expected": {
         "ticker": "086450",
         "target_price": 25000.0,
@@ -56,7 +56,7 @@
       "broker": "SK증권",
       "report_date": "2025-01-15",
       "title": "견조한 실적 아래 고객 및 제품 저변 확대",
-      "verified": false,
+      "verified": true,
       "expected": {
         "ticker": "036930",
         "target_price": 43000.0,
@@ -72,7 +72,7 @@
       "broker": "LS증권",
       "report_date": "2026-03-20",
       "title": "[정홍식 Mid-Small Cap] 메가스터디교육(215200): 국내 교육기업 대장",
-      "verified": false,
+      "verified": true,
       "expected": {
         "ticker": "215200",
         "target_price": 60000.0,
@@ -89,7 +89,7 @@
       "broker": "한화투자증권",
       "report_date": "2026-05-15",
       "title": "인고의 시간, 2027년의 가시성을 기다리며",
-      "verified": false,
+      "verified": true,
       "expected": {
         "ticker": "361610",
         "target_price": 21000.0,
@@ -105,7 +105,7 @@
       "broker": "SK증권",
       "report_date": "2026-05-19",
       "title": "중복상장 규제로 주가 탄력성 확대",
-      "verified": false,
+      "verified": true,
       "expected": {
         "ticker": "001040",
         "target_price": 230000.0,
@@ -122,7 +122,7 @@
       "broker": "DS투자증권",
       "report_date": "2026-02-10",
       "title": "IP도 이제 기득권 시대, 수도권에 자가 보유 ..",
-      "verified": false,
+      "verified": true,
       "expected": {
         "ticker": "194480",
         "target_price": 47000.0,
@@ -138,7 +138,7 @@
       "broker": "대신증권",
       "report_date": "2026-05-04",
       "title": "실적은 역대 최대, 주가는 여전히 저렴",
-      "verified": false,
+      "verified": true,
       "expected": {
         "ticker": "089970",
         "target_price": 80000.0,
@@ -155,7 +155,7 @@
       "broker": "유진투자증권",
       "report_date": "2026-04-13",
       "title": "1Q26 Preview: Rough Start",
-      "verified": false,
+      "verified": true,
       "expected": {
         "ticker": "005380",
         "target_price": 600000.0,
@@ -171,7 +171,7 @@
       "broker": "대신증권",
       "report_date": "2025-10-14",
       "title": "과도기가 지나간다",
-      "verified": false,
+      "verified": true,
       "expected": {
         "ticker": "403870",
         "target_price": 42000.0,
@@ -188,7 +188,7 @@
       "broker": "유안타증권",
       "report_date": "2026-04-28",
       "title": "기대되는 하반기 자사주 매입",
-      "verified": false,
+      "verified": true,
       "expected": {
         "ticker": "105560",
         "target_price": 220000.0,
@@ -205,7 +205,7 @@
       "broker": "대신증권",
       "report_date": "2026-04-28",
       "title": "상선이 이끄는 이익 성장",
-      "verified": false,
+      "verified": true,
       "expected": {
         "ticker": "042660",
         "target_price": 164000.0,
@@ -222,7 +222,7 @@
       "broker": "미래에셋증권",
       "report_date": "2026-05-04",
       "title": "자회사 실적 개선에 기인한 호실적",
-      "verified": false,
+      "verified": true,
       "expected": {
         "ticker": "005490",
         "target_price": 620000.0,
@@ -239,7 +239,7 @@
       "broker": "한화투자증권",
       "report_date": "2025-11-13",
       "title": "[한화투자증권 송유림][유틸리티] 한국가스공사[036460/Buy] 배당은 이어지겠지만",
-      "verified": false,
+      "verified": true,
       "expected": {
         "ticker": "036460",
         "target_price": 57000.0,
@@ -256,7 +256,7 @@
       "broker": "iM증권",
       "report_date": "2026-04-29",
       "title": "1Q26 NDR 후기: 늦지 않았으니 매수",
-      "verified": false,
+      "verified": true,
       "expected": {
         "ticker": "082740",
         "target_price": 101000.0,
@@ -273,7 +273,7 @@
       "broker": "키움증권",
       "report_date": "2026-06-10",
       "title": "사우디, UAE의 에너지 전략 속 기회요인 확인",
-      "verified": false,
+      "verified": true,
       "expected": {
         "ticker": "028050",
         "target_price": 67000.0,
@@ -289,7 +289,7 @@
       "broker": "현대차증권",
       "report_date": "2025-06-12",
       "title": "[현대차증권 윤동욱] 피에스케이[319660/BUY]  - 최고의 1분기, 그런데 더 좋아진다",
-      "verified": false,
+      "verified": true,
       "expected": {
         "ticker": "319660",
         "target_price": 194000.0,
@@ -307,7 +307,7 @@
       "broker": "한화투자증권",
       "report_date": "2026-04-30",
       "title": "토탈 테스트 하우스로 도약",
-      "verified": false,
+      "verified": true,
       "expected": {
         "ticker": "131970",
         "target_price": 175000.0,
@@ -323,7 +323,7 @@
       "broker": "하나증권",
       "report_date": "2026-04-30",
       "title": "유의미한 증익 확인",
-      "verified": false,
+      "verified": true,
       "expected": {
         "ticker": "001440",
         "target_price": 60000.0,
@@ -339,7 +339,7 @@
       "broker": "하나증권",
       "report_date": "2026-05-28",
       "title": "6월 전략 - 8월 보고 미리 보유하세요",
-      "verified": false,
+      "verified": true,
       "expected": {
         "ticker": "032640",
         "target_price": 20000.0,
@@ -355,13 +355,13 @@
       "broker": "하나증권",
       "report_date": "2026-04-14",
       "title": "1Q26 Re: 단기 실적보다는 본질에 집중할 때",
-      "verified": false,
+      "verified": true,
       "expected": {
         "ticker": "003490",
         "target_price": 32000.0,
         "estimates": {
-          "2026": 2020.0,
-          "2027": 3121.0
+          "2026": -1424,
+          "2027": 1917
         }
       }
     },
@@ -371,7 +371,7 @@
       "broker": "대신증권",
       "report_date": "2025-12-01",
       "title": "[대신증권 이지은][Initiation] 더블유게임즈: 현금이 가치를 증명할 때",
-      "verified": false,
+      "verified": true,
       "expected": {
         "ticker": "192080",
         "target_price": 70000.0,
@@ -388,7 +388,7 @@
       "broker": "IBK투자증권",
       "report_date": "2026-04-09",
       "title": "2분기부터 실적 회복 본격화",
-      "verified": false,
+      "verified": true,
       "expected": {
         "ticker": "017670",
         "target_price": 107000.0,
@@ -405,7 +405,7 @@
       "broker": "LS증권",
       "report_date": "2026-02-11",
       "title": "[성종화 유틸리티] 한전KPS(051600): 원전 방향성은 유효. 다만, 실적은 너무 아쉬움",
-      "verified": false,
+      "verified": true,
       "expected": {
         "ticker": "051600",
         "target_price": 64000.0,
@@ -421,7 +421,7 @@
       "broker": "하나증권",
       "report_date": "2026-04-28",
       "title": "1Q26 Re: 아주 좋은 시작, 기대할만한 한 해",
-      "verified": false,
+      "verified": true,
       "expected": {
         "ticker": "237690",
         "target_price": 210000.0,
@@ -437,7 +437,7 @@
       "broker": "삼성증권",
       "report_date": "2026-04-30",
       "title": "[포스코퓨처엠 (003670)] 양극재 판로 확대의 확인",
-      "verified": false,
+      "verified": true,
       "expected": {
         "ticker": "003670",
         "target_price": 320000.0,
@@ -453,7 +453,7 @@
       "broker": "대신증권",
       "report_date": "2026-04-24",
       "title": "[대신증권 박강호][1Q26 Review] LG디스플레이: 1Q 선전, OLED 투자 확대",
-      "verified": false,
+      "verified": true,
       "expected": {
         "ticker": "034220",
         "target_price": 17000.0,
@@ -470,7 +470,7 @@
       "broker": "현대차증권",
       "report_date": "2024-07-03",
       "title": "[현대차증권 박준영] 테크윙[089030/BUY]  - 더 라스트 맨 스탠딩",
-      "verified": false,
+      "verified": true,
       "expected": {
         "ticker": "089030",
         "target_price": 100000.0,
@@ -487,7 +487,7 @@
       "broker": "LS증권",
       "report_date": "2026-04-16",
       "title": "[이병근 자동차/로봇] 현대차(005380): 쉬어가는 1분",
-      "verified": false,
+      "verified": true,
       "expected": {
         "ticker": "005380",
         "target_price": 630000.0,
@@ -504,7 +504,7 @@
       "broker": "흥국증권",
       "report_date": "2026-01-29",
       "title": "[반도체 손인준] 브이엠-장비 또한 슈퍼사이클 진입",
-      "verified": false,
+      "verified": true,
       "expected": {
         "ticker": "089970",
         "target_price": 40000.0,
@@ -519,7 +519,7 @@
       "broker": "하나증권",
       "report_date": "2026-05-08",
       "title": "1Q 리뷰 - 실적 저점 통과, 2분기부터 실적 ..",
-      "verified": false,
+      "verified": true,
       "expected": {
         "ticker": "017670",
         "target_price": 140000.0,
@@ -535,7 +535,7 @@
       "broker": "교보증권",
       "report_date": "2026-05-07",
       "title": "1Q26 Review: 지속적인 고객 확대를 통한 성..",
-      "verified": false,
+      "verified": true,
       "expected": {
         "ticker": "323410",
         "target_price": 32000.0,
@@ -552,7 +552,7 @@
       "broker": "키움증권",
       "report_date": "2026-01-02",
       "title": "길어지는 기다림, 아직은 보수적 관점 유지",
-      "verified": false,
+      "verified": true,
       "expected": {
         "ticker": "278280",
         "target_price": 52000.0,
@@ -567,7 +567,7 @@
       "broker": "삼성증권",
       "report_date": "2026-07-01",
       "title": "[신세계 (004170)] 실적 증가와 valuation 상승이 동시에 가능한 환경",
-      "verified": false,
+      "verified": true,
       "expected": {
         "ticker": "004170",
         "target_price": 970000.0,
@@ -584,7 +584,7 @@
       "broker": "한화투자증권",
       "report_date": "2025-09-15",
       "title": "내년까지 편안한 증익 구간",
-      "verified": false,
+      "verified": true,
       "expected": {
         "ticker": "095610",
         "target_price": 45000.0,
@@ -600,7 +600,7 @@
       "broker": "유진투자증권",
       "report_date": "2026-07-15",
       "title": "반도체 특수 본격화",
-      "verified": false,
+      "verified": true,
       "expected": {
         "ticker": "028050",
         "target_price": 68000.0,
@@ -616,7 +616,7 @@
       "broker": "NH투자증권",
       "report_date": "2025-08-14",
       "title": "[NH/정지윤] 브이티 -상저하고",
-      "verified": false,
+      "verified": true,
       "expected": {
         "ticker": "018290",
         "target_price": null,
@@ -632,7 +632,7 @@
       "broker": "다올투자증권",
       "report_date": "2026-05-11",
       "title": "[다올투자증권 박종현] 코스메카코리아(241710) - 성장세 대비 저평가",
-      "verified": false,
+      "verified": true,
       "expected": {
         "ticker": "241710",
         "target_price": 120000.0,
@@ -648,7 +648,7 @@
       "broker": "LS증권",
       "report_date": "2026-05-13",
       "title": "[박성호 음식료/엔터] CJ제일제당(097950): 바이오를 필두로 하반기 실적 개선",
-      "verified": false,
+      "verified": true,
       "expected": {
         "ticker": "097950",
         "target_price": 270000.0,
