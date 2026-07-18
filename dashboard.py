@@ -18,7 +18,12 @@ ENABLE_KOSDAQ150 = os.environ.get("ENABLE_KOSDAQ150", "false").strip().lower() i
 UNIVERSE_LABEL = "KOSPI 200 + KOSDAQ 150" if ENABLE_KOSDAQ150 else "KOSPI 200"
 
 if not st.session_state.get("_db_initialized"):
-    init_db()
+    try:
+        init_db()
+    except sqlite3.OperationalError:
+        # The monitor holds write locks during ingestion runs; the schema
+        # already exists, so skipping migration DDL here is safe.
+        pass
     st.session_state["_db_initialized"] = True
 
 st.set_page_config(page_title="KOSPI EPS Monitor", layout="wide")
