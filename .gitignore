@@ -7,3 +7,6 @@ __pycache__/
 .DS_Store
 reports/
 logs/
+*.db.backup-*
+.tools/
+.claude/settings.local.json
