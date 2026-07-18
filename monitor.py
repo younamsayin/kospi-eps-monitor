@@ -666,7 +666,11 @@ def _load_prior_quality_baseline(report: dict, extracted: dict):
     prior_eps = {}
     if not (report.get("ticker") and report.get("broker") and report.get("report_date")):
         return prior_tp, prior_eps
-    qconn = get_conn()
+    qconn = _reopen_conn(
+        None,
+        report.get("source") or "Quality",
+        "opening DB connection for quality baseline",
+    )
     try:
         tp_row = get_previous_target_price_record(
             qconn, report["ticker"], report["broker"], report["report_date"],
@@ -847,18 +851,25 @@ def _extract_report_payload(
     if QUALITY_CHECKS_ENABLED:
         # Normalize estimates now (short-lived connection) so quality checks
         # see post-shift, post-cutoff fiscal years; the save step skips
-        # re-normalizing via the flag below.
-        qconn = get_conn()
+        # re-normalizing via the flag below. Everything here is fail-open:
+        # quality checks must never block ingestion, and disk I/O errors are
+        # retried the same way as every other DB touchpoint.
         try:
-            extracted["estimates"] = _normalize_estimates(qconn, report, extracted)
-        finally:
-            qconn.close()
-        extracted["_estimates_normalized"] = True
-        try:
+            qconn = _reopen_conn(
+                None,
+                report.get("source") or "Quality",
+                "opening DB connection for pre-save estimate normalization",
+            )
+            try:
+                extracted["estimates"] = _normalize_estimates(qconn, report, extracted)
+                extracted["_estimates_normalized"] = True
+            finally:
+                qconn.close()
             _run_quality_checks(report, extracted, pdf_bytes)
         except Exception as exc:
-            # Quality checks must never block ingestion.
-            logger.warning("    [!] Quality checks errored; continuing without flags: %s", exc)
+            # Without the normalized flag, the save step re-runs
+            # _normalize_estimates on its own retry-wrapped connection.
+            logger.warning("    [!] Quality checks skipped; continuing without flags: %s", exc)
 
     return "ready", extracted
 
